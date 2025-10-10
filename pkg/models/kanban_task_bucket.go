@@ -23,6 +23,7 @@ import (
 	"code.vikunja.io/api/pkg/events"
 	"code.vikunja.io/api/pkg/user"
 	"code.vikunja.io/api/pkg/web"
+	"github.com/jinzhu/copier"
 	"xorm.io/xorm"
 )
 
@@ -148,7 +149,6 @@ func (b *TaskBucket) Update(s *xorm.Session, a web.Auth) (err error) {
 	}
 
 	var updateBucket = true
-
 	// mark task done if moved into or out of the done bucket
 	// Only change the done state if the task's done value actually changes
 	var doneChanged bool
@@ -157,10 +157,14 @@ func (b *TaskBucket) Update(s *xorm.Session, a web.Auth) (err error) {
 			doneChanged = true
 			task.Done = true
 			if task.isRepeating() {
-				oldTask := task
+				// Original copy by koalente, does not work because changing oldTask.Done changes also task.Done
+				//oldTask := task
+				//oldTask.Done = false
+				oldTask := &Task{}
+				err = copier.Copy(oldTask, task)
 				oldTask.Done = false
-				updateDone(oldTask, task)
-				updateBucket = false
+				updateDone(s, a, oldTask, task)
+				updateBucket = true
 				b.BucketID = oldTaskBucket.BucketID
 			}
 		}

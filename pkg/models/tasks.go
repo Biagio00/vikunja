@@ -1189,7 +1189,7 @@ func (t *Task) updateSingleTask(s *xorm.Session, a web.Auth, fields []string) (e
 	}
 
 	// When a repeating task is marked as done, we update all deadlines and reminders and set it as undone
-	updateDoneAt := updateDone(&ot, t)
+	updateDoneAt := updateDone(s, a, &ot, t)
 	if updateDoneAt {
 		colsToUpdate = append(colsToUpdate, "done_at")
 	}
@@ -1565,11 +1565,33 @@ func setTaskDatesFromCurrentDateRepeat(oldTask, newTask *Task) {
 // We make a few assumptions here:
 //  1. Everything in oldTask is the truth - we figure out if we update anything at all if oldTask.RepeatAfter has a value > 0
 //  2. Because of 1., this functions should not be used to update values other than Done in the same go
-func updateDone(oldTask *Task, newTask *Task) (updateDoneAt bool) {
+func updateDone(s *xorm.Session, a web.Auth, oldTask *Task, newTask *Task) (updateDoneAt bool) {
 	// Track if the done status changed before repeat helpers modify it
 	doneStatusChanged := oldTask.Done != newTask.Done
 
 	if !oldTask.Done && newTask.Done {
+		var err error
+		// Creating another task that keeps the done status
+		t := &Task{}
+		err = copier.Copy(t, newTask)
+		if err != nil {
+			log.Errorf("Could not duplicate task object when setting done a repeating task: %v", err)
+			return false
+		}
+		// Resetting some values that are not importanto for the copy
+		t.ID = 0
+		t.UID = ""
+		t.Index = 0
+		t.Reminders = []*TaskReminder{}
+		t.RepeatAfter = 0
+		t.RepeatMode = 0
+		t.Title = "✔️ " + t.Title
+		err = createTask(s, t, a, true, true)
+		if err != nil {
+			log.Errorf("Could not create duplicate task when setting done a repeating task: %v", err)
+			return false
+		}
+
 		switch oldTask.RepeatMode {
 		case TaskRepeatModeMonth:
 			setTaskDatesMonthRepeat(oldTask, newTask)
