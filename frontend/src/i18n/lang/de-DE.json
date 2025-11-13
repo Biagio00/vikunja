@@ -862,6 +862,8 @@
 			"relatedTasks": "Verwandte Aufgaben",
 			"reminders": "Erinnerungen",
 			"repeat": "Wiederholen",
+			"comment": "{count} Kommentar | {count} Kommentare",
+			"commentCount": "Anzahl der Kommentare",
 			"startDate": "Anfangsdatum",
 			"title": "Titel",
 			"updated": "Aktualisiert",
@@ -908,6 +910,9 @@
 			"deleteSuccess": "Der Kommentar wurde erfolgreich gelöscht.",
 			"addedSuccess": "Der Kommentar wurde erfolgreich hinzugefügt.",
 			"permalink": "Permalink zu diesem Kommentar kopieren"
+		},
+		"mention": {
+			"noUsersFound": "Keine Nutzer:innen gefunden"
 		},
 		"deferDueDate": {
 			"title": "Fälligkeitsdatum verschieben",
