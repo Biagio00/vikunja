@@ -1579,7 +1579,7 @@ func updateDone(s *xorm.Session, a web.Auth, oldTask *Task, newTask *Task) (upda
 	// Track if the done status changed before repeat helpers modify it
 	doneStatusChanged := oldTask.Done != newTask.Done
 
-	if !oldTask.Done && newTask.Done {
+	if !oldTask.Done && newTask.Done && oldTask.isRepeating() {
 		var err error
 		// Creating another task that keeps the done status
 		t := &Task{}
