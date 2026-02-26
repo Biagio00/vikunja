@@ -193,6 +193,12 @@ func TestTaskCollection_ReadAll(t *testing.T) {
 				Reminder: time.Unix(1543626824, 0).In(loc),
 				Created:  time.Unix(1543626724, 0).In(loc),
 			},
+			{
+				ID:       5,
+				TaskID:   2,
+				Reminder: time.Date(2019, 6, 1, 12, 0, 0, 0, loc),
+				Created:  time.Unix(1543626724, 0).In(loc),
+			},
 		},
 		Created: time.Unix(1543626724, 0).In(loc),
 		Updated: time.Unix(1543626724, 0).In(loc),
@@ -651,6 +657,32 @@ func TestTaskCollection_ReadAll(t *testing.T) {
 		Created:      time.Unix(1543626724, 0).In(loc),
 		Updated:      time.Unix(1543626724, 0).In(loc),
 	}
+	task47 := &Task{
+		ID:          47,
+		Title:       "task #47 with reminders outside window",
+		Identifier:  "test1-32",
+		Index:       32,
+		CreatedByID: 1,
+		CreatedBy:   user1,
+		Reminders: []*TaskReminder{
+			{
+				ID:       6,
+				TaskID:   47,
+				Reminder: time.Date(2018, 8, 1, 12, 0, 0, 0, loc),
+				Created:  time.Unix(1543626724, 0).In(loc),
+			},
+			{
+				ID:       7,
+				TaskID:   47,
+				Reminder: time.Date(2019, 3, 1, 12, 0, 0, 0, loc),
+				Created:  time.Unix(1543626724, 0).In(loc),
+			},
+		},
+		ProjectID:    1,
+		RelatedTasks: map[RelationKind][]*Task{},
+		Created:      time.Unix(1543626724, 0).In(loc),
+		Updated:      time.Unix(1543626724, 0).In(loc),
+	}
 
 	type fields struct {
 		ProjectID     int64
@@ -732,6 +764,7 @@ func TestTaskCollection_ReadAll(t *testing.T) {
 				task33,
 				task35,
 				task39,
+				task47,
 			},
 			wantErr: false,
 		},
@@ -777,6 +810,7 @@ func TestTaskCollection_ReadAll(t *testing.T) {
 				task33,
 				task35,
 				task39,
+				task47,
 			},
 			wantErr: false,
 		},
@@ -789,6 +823,7 @@ func TestTaskCollection_ReadAll(t *testing.T) {
 			},
 			args: defaultArgs,
 			want: []*Task{
+				task47,
 				task35,
 				task33,
 				task32,
@@ -940,6 +975,7 @@ func TestTaskCollection_ReadAll(t *testing.T) {
 				task32,
 				task33,
 				task35,
+				task47,
 			},
 			wantErr: false,
 		},
@@ -1006,6 +1042,7 @@ func TestTaskCollection_ReadAll(t *testing.T) {
 				task33, // has nil dates
 				task35, // has nil dates
 				task39, // has nil dates
+				task47, // has nil dates
 			},
 			wantErr: false,
 		},
@@ -1037,6 +1074,7 @@ func TestTaskCollection_ReadAll(t *testing.T) {
 				task30,
 				task31,
 				task33,
+				task47,
 			},
 			wantErr: false,
 		},
@@ -1056,6 +1094,7 @@ func TestTaskCollection_ReadAll(t *testing.T) {
 				task30,
 				task31,
 				task33,
+				task47,
 			},
 			wantErr: false,
 		},
@@ -1068,6 +1107,39 @@ func TestTaskCollection_ReadAll(t *testing.T) {
 			want: []*Task{
 				task2,
 				task27,
+			},
+			wantErr: false,
+		},
+		{
+			name: "filtered reminder dates should not match task with reminders outside window",
+			fields: fields{
+				Filter: "reminders > '2018-10-01T00:00:00+00:00' && reminders < '2018-12-10T00:00:00+00:00'",
+			},
+			args: defaultArgs,
+			want: []*Task{
+				task2,
+				task27,
+			},
+			wantErr: false,
+		},
+		{
+			name: "filtered reminder dates narrow window excludes all",
+			fields: fields{
+				Filter: "reminders > '2018-09-01T00:00:00+00:00' && reminders < '2018-09-02T00:00:00+00:00'",
+			},
+			args:    defaultArgs,
+			want:    []*Task{},
+			wantErr: false,
+		},
+		{
+			name: "filtered reminder dates with OR should match independently",
+			fields: fields{
+				Filter: "reminders > '2019-01-01T00:00:00+00:00' || reminders < '2018-09-01T00:00:00+00:00'",
+			},
+			args: defaultArgs,
+			want: []*Task{
+				task2,  // has reminder at 2019-06-01 (> 2019-01-01)
+				task47, // has reminder at 2019-03-01 (> 2019-01-01) and 2018-08-01 (< 2018-09-01)
 			},
 			wantErr: false,
 		},
@@ -1143,6 +1215,7 @@ func TestTaskCollection_ReadAll(t *testing.T) {
 				task33,
 				task35,
 				task39,
+				task47,
 			},
 			wantErr: false,
 		},
@@ -1237,6 +1310,7 @@ func TestTaskCollection_ReadAll(t *testing.T) {
 				task33,
 				task35,
 				task39,
+				task47,
 			},
 			wantErr: false,
 		},
@@ -1313,6 +1387,7 @@ func TestTaskCollection_ReadAll(t *testing.T) {
 				task33,
 				task35,
 				task39,
+				task47,
 			},
 			wantErr: false,
 		},
@@ -1357,6 +1432,7 @@ func TestTaskCollection_ReadAll(t *testing.T) {
 				//task35,
 				// task 35 has a label 5 and 4
 				task39,
+				task47,
 			},
 			wantErr: false,
 		},
@@ -1401,6 +1477,64 @@ func TestTaskCollection_ReadAll(t *testing.T) {
 				//task35,
 				// task 35 has a label 5 and 4
 				task39,
+				task47,
+			},
+			wantErr: false,
+		},
+		{
+			// Regression: AND-joined equality filters on the same sub-table must
+			// NOT be merged into a single EXISTS (each label lives on a separate row).
+			name: "filter labels AND both must exist",
+			fields: fields{
+				Filter: "labels = 4 && labels = 5",
+			},
+			args: defaultArgs,
+			want: []*Task{
+				task35, // only task with both labels 4 and 5
+			},
+			wantErr: false,
+		},
+		{
+			// Regression: AND-joined negative filters must NOT be merged into a
+			// single NOT EXISTS (would produce trivially-true condition).
+			name: "filter labels not eq AND both excluded",
+			fields: fields{
+				Filter: "labels != 4 && labels != 5",
+			},
+			args: defaultArgs,
+			want: []*Task{
+				// Tasks that have neither label 4 nor label 5
+				task3,
+				task4,
+				task5,
+				task6,
+				task7,
+				task8,
+				task9,
+				task10,
+				task11,
+				task12,
+				task15,
+				task16,
+				task17,
+				task18,
+				task19,
+				task20,
+				task21,
+				task22,
+				task23,
+				task24,
+				task25,
+				task26,
+				task27,
+				task28,
+				task29,
+				task30,
+				task31,
+				task32,
+				task33,
+				task39,
+				task47,
 			},
 			wantErr: false,
 		},
@@ -1491,6 +1625,7 @@ func TestTaskCollection_ReadAll(t *testing.T) {
 				task30,
 				task31,
 				task33,
+				task47,
 			},
 		},
 		{
@@ -1508,6 +1643,7 @@ func TestTaskCollection_ReadAll(t *testing.T) {
 				task5,
 				task28,
 				// The other ones don't have a due date
+				task47,
 				task39,
 				task35,
 				task33,

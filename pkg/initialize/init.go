@@ -80,16 +80,16 @@ func FullInitWithoutAsync() {
 	LightInit()
 
 	// Initialize the files handler
-	files.InitFileHandler()
+	err := files.InitFileHandler()
+	if err != nil {
+		log.Fatalf("Could not init file handler: %s", err)
+	}
 
 	// Run the migrations
 	migration.Migrate(nil)
 
 	// Set Engine
 	InitEngines()
-
-	// Init Typesense
-	models.InitTypesense()
 
 	// Start the mail daemon
 	mail.StartMailDaemon()
@@ -98,7 +98,7 @@ func FullInitWithoutAsync() {
 	ldap.InitializeLDAPConnection()
 
 	// Check all OpenID Connect providers at startup
-	_, err := openid.GetAllProviders()
+	_, err = openid.GetAllProviders()
 	if err != nil {
 		log.Errorf("Error initializing OpenID Connect providers: %s", err)
 	}
@@ -123,6 +123,7 @@ func FullInit() {
 	models.RegisterOldExportCleanupCron()
 	models.RegisterAddTaskToFilterViewCron()
 	user.RegisterTokenCleanupCron()
+	models.RegisterSessionCleanupCron()
 	user.RegisterDeletionNotificationCron()
 	openid.CleanupSavedOpenIDProviders()
 	openid.RegisterEmptyOpenIDTeamCleanupCron()

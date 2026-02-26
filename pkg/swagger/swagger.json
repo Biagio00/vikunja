@@ -4055,7 +4055,7 @@
                 }
             }
         },
-        "/tasks/all": {
+        "/tasks": {
             "get": {
                 "security": [
                     {
@@ -4696,6 +4696,55 @@
                 }
             }
         },
+        "/tasks/{projecttask}/read": {
+            "post": {
+                "security": [
+                    {
+                        "JWTKeyAuth": []
+                    }
+                ],
+                "description": "Marks a task as read for the current user by removing the unread status entry.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "task"
+                ],
+                "summary": "Mark a task as read",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Task ID",
+                        "name": "projecttask",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "The task unread status object.",
+                        "schema": {
+                            "$ref": "#/definitions/models.TaskUnreadStatus"
+                        }
+                    },
+                    "403": {
+                        "description": "The user does not have access to the task",
+                        "schema": {
+                            "$ref": "#/definitions/web.HTTPError"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal error",
+                        "schema": {
+                            "$ref": "#/definitions/models.Message"
+                        }
+                    }
+                }
+            }
+        },
         "/tasks/{taskID}/assignees": {
             "get": {
                 "security": [
@@ -4955,6 +5004,12 @@
                         "name": "taskID",
                         "in": "path",
                         "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Sort order. Can be 'asc' for ascending or 'desc' for descending. Defaults to 'asc'.",
+                        "name": "order_by",
+                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -6564,6 +6619,26 @@
                 }
             }
         },
+        "/user/logout": {
+            "post": {
+                "description": "Destroys the current session and clears the refresh token cookie.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "auth"
+                ],
+                "summary": "Logout",
+                "responses": {
+                    "200": {
+                        "description": "Successfully logged out.",
+                        "schema": {
+                            "$ref": "#/definitions/models.Message"
+                        }
+                    }
+                }
+            }
+        },
         "/user/password": {
             "post": {
                 "security": [
@@ -7384,7 +7459,7 @@
         },
         "/user/token": {
             "post": {
-                "description": "Returns a new valid jwt user token with an extended length.",
+                "description": "Returns a new valid jwt link share token. Only works for link share tokens.",
                 "consumes": [
                     "application/json"
                 ],
@@ -7392,9 +7467,9 @@
                     "application/json"
                 ],
                 "tags": [
-                    "user"
+                    "auth"
                 ],
-                "summary": "Renew user token",
+                "summary": "Renew link share token",
                 "responses": {
                     "200": {
                         "description": "OK",
@@ -7403,7 +7478,33 @@
                         }
                     },
                     "400": {
-                        "description": "Only user token are available for renew.",
+                        "description": "Only link share tokens can be renewed.",
+                        "schema": {
+                            "$ref": "#/definitions/models.Message"
+                        }
+                    }
+                }
+            }
+        },
+        "/user/token/refresh": {
+            "post": {
+                "description": "Exchanges the refresh token cookie for a new short-lived JWT.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "auth"
+                ],
+                "summary": "Refresh user token",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/auth.Token"
+                        }
+                    },
+                    "401": {
+                        "description": "Invalid or expired refresh token.",
                         "schema": {
                             "$ref": "#/definitions/models.Message"
                         }
@@ -8579,6 +8680,10 @@
                         "$ref": "#/definitions/models.Bucket"
                     }
                 },
+                "comment_count": {
+                    "description": "Comment count of this task. Only present when fetching tasks with the `expand` parameter set to `comment_count`.",
+                    "type": "integer"
+                },
                 "comments": {
                     "description": "All comments of this task. Only present when fetching tasks with the `expand` parameter set to `comments`.",
                     "type": "array",
@@ -8641,6 +8746,9 @@
                 },
                 "is_favorite": {
                     "description": "True if a task is a favorite task. Favorite tasks show up in a separate \"Important\" project. This value depends on the user making the call to the api.",
+                    "type": "boolean"
+                },
+                "is_unread": {
                     "type": "boolean"
                 },
                 "labels": {
@@ -8914,6 +9022,17 @@
                 "TaskRepeatModeFromCurrentDate"
             ]
         },
+        "models.TaskUnreadStatus": {
+            "type": "object",
+            "properties": {
+                "taskID": {
+                    "type": "integer"
+                },
+                "userID": {
+                    "type": "integer"
+                }
+            }
+        },
         "models.Team": {
             "type": "object",
             "properties": {
@@ -9153,6 +9272,13 @@
         "models.Webhook": {
             "type": "object",
             "properties": {
+                "basic_auth_password": {
+                    "type": "string"
+                },
+                "basic_auth_user": {
+                    "description": "If provided, webhook requests will be sent with a Basic Auth header.",
+                    "type": "string"
+                },
                 "created": {
                     "description": "A timestamp when this webhook target was created. You cannot change this value.",
                     "type": "string"
@@ -9296,7 +9422,9 @@
             "properties": {
                 "new_password": {
                     "description": "The new password for this user.",
-                    "type": "string"
+                    "type": "string",
+                    "maxLength": 72,
+                    "minLength": 8
                 },
                 "token": {
                     "description": "The previously issued reset token.",
@@ -9429,7 +9557,9 @@
             "type": "object",
             "properties": {
                 "new_password": {
-                    "type": "string"
+                    "type": "string",
+                    "maxLength": 72,
+                    "minLength": 8
                 },
                 "old_password": {
                     "type": "string"

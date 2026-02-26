@@ -6,12 +6,23 @@
 	>
 		<h3
 			v-if="canWrite || comments.length > 0"
+			class="comments-heading"
 			:class="{'d-print-none': comments.length === 0}"
 		>
-			<span class="icon is-grey">
-				<Icon :icon="['far', 'comments']" />
+			<span>
+				<span class="icon is-grey">
+					<Icon :icon="['far', 'comments']" />
+				</span>
+				{{ $t('task.comment.title') }}
 			</span>
-			{{ $t('task.comment.title') }}
+			<BaseButton
+				v-if="comments.length > 0"
+				class="comment-sort-button"
+				@click="toggleSortOrder"
+			>
+				<Icon :icon="commentSortOrder === 'asc' ? 'arrow-down-short-wide' : 'arrow-up-short-wide'" />
+				{{ commentSortOrder === 'asc' ? $t('task.comment.sortOldestFirst') : $t('task.comment.sortNewestFirst') }}
+			</BaseButton>
 		</h3>
 		<div class="comments">
 			<span
@@ -101,6 +112,8 @@
 						:bottom-actions="actions[c.id]"
 						:show-save="true"
 						:enable-discard-shortcut="true"
+						:enable-mentions="true"
+						:mention-project-id="projectId"
 						initial-mode="preview"
 						@update:modelValue="
 							() => {
@@ -168,6 +181,9 @@
 								}"
 								:upload-callback="attachmentUpload"
 								:placeholder="$t('task.comment.placeholder')"
+								:enable-mentions="true"
+								:mention-project-id="projectId"
+								:storage-key="commentStorageKey"
 								@save="addComment()"
 							/>
 						</div>
@@ -206,9 +222,10 @@
 </template>
 
 <script setup lang="ts">
-import {ref, reactive, computed, shallowReactive, watch, nextTick} from 'vue'
+import {ref, reactive, computed, shallowReactive, watch} from 'vue'
 import {useI18n} from 'vue-i18n'
 
+import BaseButton from '@/components/base/BaseButton.vue'
 import CustomTransition from '@/components/misc/CustomTransition.vue'
 import Editor from '@/components/input/AsyncEditor'
 import PaginationEmit from '@/components/misc/PaginationEmit.vue'
@@ -222,6 +239,7 @@ import type {ITask} from '@/modelTypes/ITask'
 import {uploadFile} from '@/helpers/attachments'
 import {success} from '@/message'
 import {formatDateLong, formatDisplayDate} from '@/helpers/time/formatDate'
+import {clearEditorDraft} from '@/helpers/editorDraftStorage'
 import {fetchAvatarBlobUrl, getDisplayName} from '@/models/user'
 import type {IUser} from '@/modelTypes/IUser'
 import {useConfigStore} from '@/stores/config'
@@ -231,6 +249,7 @@ import {useCopyToClipboard} from '@/composables/useCopyToClipboard'
 
 const props = withDefaults(defineProps<{
 	taskId: number,
+	projectId: number,
 	canWrite?: boolean
 	initialComments: ITaskComment[]
 }>(), {
@@ -242,6 +261,9 @@ const copy = useCopyToClipboard()
 const {t} = useI18n({useScope: 'global'})
 const configStore = useConfigStore()
 const authStore = useAuthStore()
+
+const localSortOrder = ref<'asc' | 'desc' | null>(null)
+const commentSortOrder = computed(() => localSortOrder.value ?? authStore.settings.frontendSettings.commentSortOrder ?? 'asc')
 
 const comments = ref<ITaskComment[]>([])
 
@@ -294,6 +316,7 @@ const actions = computed(() => {
 })
 
 const frontendUrl = computed(() => configStore.frontendUrl)
+const commentStorageKey = computed(() => `task-comment-${props.taskId}`)
 
 const currentPage = ref(1)
 
@@ -330,20 +353,44 @@ async function loadComments(taskId: ITask['id']) {
 	commentEdit.taskId = taskId
 	commentToDelete.taskId = taskId
 
-	if (typeof props.initialComments !== 'undefined' && currentPage.value === 1) {
+	if (commentSortOrder.value === 'asc' && typeof props.initialComments !== 'undefined' && currentPage.value === 1) {
 		if (props.initialComments.length < configStore.maxItemsPerPage) {
 			comments.value = props.initialComments
 			return
 		}
 	}
 
-	comments.value = await taskCommentService.getAll({taskId}, {}, currentPage.value)
+	comments.value = await taskCommentService.getAll({taskId}, {order_by: commentSortOrder.value}, currentPage.value)
 }
 
 async function changePage(page: number) {
 	commentsRef.value?.scrollIntoView({ behavior: 'smooth', block: 'start', inline: 'nearest' })
 	currentPage.value = page
 	await loadComments(props.taskId)
+}
+
+async function toggleSortOrder() {
+	const newOrder = commentSortOrder.value === 'asc' ? 'desc' : 'asc'
+	if (!authStore.isLinkShareAuth) {
+		await authStore.saveUserSettings({
+			settings: {
+				...authStore.settings,
+				frontendSettings: {
+					...authStore.settings.frontendSettings,
+					commentSortOrder: newOrder,
+				},
+			},
+			showMessage: false,
+		})
+	} else {
+		localSortOrder.value = newOrder
+	}
+	if (taskCommentService.totalPages > 1) {
+		currentPage.value = 1
+		await loadComments(props.taskId)
+	} else {
+		comments.value.reverse()
+	}
 }
 
 watch(
@@ -363,13 +410,6 @@ async function addComment() {
 		return
 	}
 
-	// This makes the editor trigger its mounted function again which makes it forget every input
-	// it currently has in its textarea. This is a counter-hack to a hack inside of vue-easymde
-	// which made it impossible to detect change from the outside. Therefore the component would
-	// not update if new content from the outside was made available.
-	// See https://github.com/NikulinIlya/vue-easymde/issues/3
-	editorActive.value = false
-	nextTick(() => (editorActive.value = true))
 	creating.value = true
 
 	try {
@@ -377,8 +417,24 @@ async function addComment() {
 		newComment.taskId = props.taskId
 		newComment.comment = newCommentText.value
 		const comment = await taskCommentService.create(newComment)
-		comments.value.push(comment)
+
+		if (commentSortOrder.value === 'desc' && currentPage.value > 1) {
+			currentPage.value = 1
+			await loadComments(props.taskId)
+		} else if (commentSortOrder.value === 'desc') {
+			comments.value.unshift(comment)
+		} else {
+			comments.value.push(comment)
+		}
 		newCommentText.value = ''
+
+		// Ensure draft is cleared from localStorage
+		clearEditorDraft(commentStorageKey.value)
+
+		if (commentSortOrder.value === 'desc') {
+			commentsRef.value?.scrollIntoView({behavior: 'smooth', block: 'start', inline: 'nearest'})
+		}
+
 		success({message: t('task.comment.addedSuccess')})
 	} finally {
 		creating.value = false
@@ -503,6 +559,25 @@ function getCommentUrl(commentId: string) {
 
 .media-content {
 	inline-size: calc(100% - 48px - 2rem);
+}
+
+.comments-heading {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+}
+
+.comment-sort-button {
+	font-size: .75rem;
+	font-weight: normal;
+	color: var(--grey-500);
+	display: inline-flex;
+	align-items: center;
+	gap: .25rem;
+
+	&:hover {
+		color: var(--grey-700);
+	}
 }
 
 .comments-container {

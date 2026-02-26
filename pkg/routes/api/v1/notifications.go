@@ -23,7 +23,7 @@ import (
 	"code.vikunja.io/api/pkg/models"
 	"code.vikunja.io/api/pkg/modules/auth"
 	"code.vikunja.io/api/pkg/notifications"
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // MarkAllNotificationsAsRead marks all notifications of a user as read
@@ -34,7 +34,7 @@ import (
 // @Success 200 {object} models.Message "All notifications marked as read."
 // @Failure 500 {object} models.Message "Internal error"
 // @Router /notifications [post]
-func MarkAllNotificationsAsRead(c echo.Context) error {
+func MarkAllNotificationsAsRead(c *echo.Context) error {
 	s := db.NewSession()
 	defer s.Close()
 
@@ -49,6 +49,11 @@ func MarkAllNotificationsAsRead(c echo.Context) error {
 
 	err = notifications.MarkAllNotificationsAsRead(s, a.GetID())
 	if err != nil {
+		_ = s.Rollback()
+		return err
+	}
+
+	if err := s.Commit(); err != nil {
 		return err
 	}
 

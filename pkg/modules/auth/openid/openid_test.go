@@ -218,6 +218,8 @@ func TestGetOrCreateUser(t *testing.T) {
 		teamData := getTeamDataFromToken(cl.VikunjaGroups, nil)
 		err := models.SyncExternalTeamsForUser(s, u, teamData, "https://some.issuer", "OIDC")
 		require.NoError(t, err)
+		err = s.Commit()
+		require.NoError(t, err)
 
 		db.AssertMissing(t, "team_members", map[string]interface{}{
 			"team_id": 14,
@@ -413,6 +415,7 @@ func TestMergeClaims(t *testing.T) {
 
 		// Verify error is returned for missing email
 		require.Error(t, err)
-		assert.IsType(t, &user.ErrNoOpenIDEmailProvided{}, err)
+		var expectedErr *user.ErrNoOpenIDEmailProvided
+		assert.ErrorAs(t, err, &expectedErr)
 	})
 }

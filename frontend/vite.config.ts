@@ -26,6 +26,7 @@ const PREFIXED_SCSS_STYLES = `@use "sass:math";
 /*
 ** Configure sentry plugin
 */
+// @ts-ignore
 function getSentryConfig(env: ImportMetaEnv): ViteSentryPluginOptions {
 	return {
 		skipEnvironmentCheck: true,
@@ -142,6 +143,7 @@ function getBuildConfig(env: Record<string, string>) {
 				filename: 'sw.ts',
 				strategies: 'injectManifest',
 				injectRegister: false,
+				useCredentials: true,
 				manifest: {
 					name: 'Vikunja',
 					short_name: 'Vikunja',
@@ -211,7 +213,7 @@ function getBuildConfig(env: Record<string, string>) {
 		},
 		server: {
 			host: '127.0.0.1', // see: https://github.com/vitejs/vite/pull/8543
-			port: 4173,
+			port: parseInt(env.VIKUNJA_FRONTEND_PORT || '4173', 10),
 			strictPort: true,
 		},
 		output: {

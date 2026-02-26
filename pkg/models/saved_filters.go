@@ -19,7 +19,6 @@ package models
 import (
 	"time"
 
-	"code.vikunja.io/api/pkg/config"
 	"code.vikunja.io/api/pkg/cron"
 	"code.vikunja.io/api/pkg/db"
 	"code.vikunja.io/api/pkg/log"
@@ -195,6 +194,8 @@ func (sf *SavedFilter) Update(s *xorm.Session, _ web.Auth) error {
 		return err
 	}
 
+	sf.OwnerID = origFilter.OwnerID
+
 	if sf.Filters == nil {
 		sf.Filters = origFilter.Filters
 	}
@@ -263,18 +264,11 @@ func (sf *SavedFilter) Update(s *xorm.Session, _ web.Auth) error {
 		}
 
 		taskBuckets := make([]*TaskBucket, 0, len(tasksToAdd))
-		taskPositions := make([]*TaskPosition, 0, len(tasksToAdd))
 		for _, task := range tasksToAdd {
 			taskBuckets = append(taskBuckets, &TaskBucket{
 				TaskID:        task.ID,
 				BucketID:      bucketID,
 				ProjectViewID: view.ID,
-			})
-
-			taskPositions = append(taskPositions, &TaskPosition{
-				TaskID:        task.ID,
-				ProjectViewID: view.ID,
-				Position:      0,
 			})
 		}
 
@@ -284,11 +278,9 @@ func (sf *SavedFilter) Update(s *xorm.Session, _ web.Auth) error {
 			}
 		}
 
-		if len(taskPositions) > 0 {
-			if _, err = s.Insert(taskPositions); err != nil {
-				return err
-			}
-
+		// Recalculate positions for all tasks - this will create positions for
+		// new tasks that don't have them yet
+		if len(tasksToAdd) > 0 {
 			if err = RecalculateTaskPositions(s, view, &user.User{ID: sf.OwnerID}); err != nil {
 				return err
 			}
@@ -438,7 +430,6 @@ func RegisterAddTaskToFilterViewCron() {
 		newTaskBuckets := []*TaskBucket{}
 		newTaskPositions := []*TaskPosition{}
 		deleteCond := []builder.Cond{}
-		taskIDsToRemove := []int64{}
 		viewsToRecalc := map[int64]struct {
 			view    *ProjectView
 			ownerID int64
@@ -504,13 +495,8 @@ func RegisterAddTaskToFilterViewCron() {
 					newTaskBuckets = append(newTaskBuckets, tb)
 				}
 				if _, exists := savedTaskPositionMap[task.ID]; !exists {
-					tp := &TaskPosition{
-						TaskID:        task.ID,
-						ProjectViewID: view.ID,
-						Position:      0,
-					}
-					newTaskPositions = append(newTaskPositions, tp)
-
+					// Mark view for recalculation - RecalculateTaskPositions will create
+					// positions for all tasks including new ones
 					if _, ok := viewsToRecalc[view.ID]; !ok {
 						viewsToRecalc[view.ID] = struct {
 							view    *ProjectView
@@ -534,17 +520,20 @@ func RegisterAddTaskToFilterViewCron() {
 						builder.Eq{"task_id": taskID},
 						builder.Eq{"project_view_id": view.ID},
 					))
-					taskIDsToRemove = append(taskIDsToRemove, taskID)
 				}
 			}
 		}
 
-		upsertRelatedTaskProperties(s, logPrefix, newTaskBuckets, newTaskPositions, deleteCond, taskIDsToRemove)
+		upsertRelatedTaskProperties(s, logPrefix, newTaskBuckets, newTaskPositions, deleteCond)
 
 		for _, data := range viewsToRecalc {
 			if err := RecalculateTaskPositions(s, data.view, &user.User{ID: data.ownerID}); err != nil {
 				log.Errorf("%sError recalculating task positions for view %d: %s", logPrefix, data.view.ID, err)
 			}
+		}
+
+		if err := s.Commit(); err != nil {
+			log.Errorf("%sError committing: %s", logPrefix, err)
 		}
 	})
 	if err != nil {
@@ -552,7 +541,7 @@ func RegisterAddTaskToFilterViewCron() {
 	}
 }
 
-func upsertRelatedTaskProperties(s *xorm.Session, logPrefix string, newTaskBuckets []*TaskBucket, newTaskPositions []*TaskPosition, deleteCond []builder.Cond, taskIDsToRemove []int64) {
+func upsertRelatedTaskProperties(s *xorm.Session, logPrefix string, newTaskBuckets []*TaskBucket, newTaskPositions []*TaskPosition, deleteCond []builder.Cond) {
 	var err error
 	if len(newTaskBuckets) > 0 {
 		_, err = s.Insert(newTaskBuckets)
@@ -574,29 +563,6 @@ func upsertRelatedTaskProperties(s *xorm.Session, logPrefix string, newTaskBucke
 		_, err = s.Where(builder.Or(deleteCond...)).Delete(&TaskPosition{})
 		if err != nil {
 			log.Errorf("%sError deleting task positions: %s", logPrefix, err)
-		}
-	}
-
-	if config.TypesenseEnabled.GetBool() && (len(newTaskPositions) > 0 || len(taskIDsToRemove) > 0) {
-		taskIDs := []int64{}
-		for _, position := range newTaskPositions {
-			taskIDs = append(taskIDs, position.TaskID)
-		}
-		taskIDs = append(taskIDs, taskIDsToRemove...)
-		tasks, err := GetTasksSimpleByIDs(s, taskIDs)
-		if err != nil {
-			log.Errorf("%sError fetching tasks: %s", logPrefix, err)
-			return
-		}
-		taskMap := make(map[int64]*Task)
-		for _, t := range tasks {
-			taskMap[t.ID] = t
-		}
-
-		err = reindexTasksInTypesense(s, taskMap)
-		if err != nil {
-			log.Errorf("%sError reindexing tasks into Typesense: %s", logPrefix, err)
-			return
 		}
 	}
 }

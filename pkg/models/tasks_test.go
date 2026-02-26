@@ -54,7 +54,7 @@ func TestTask_Create(t *testing.T) {
 		assert.NotEmpty(t, task.UID)
 		// Assert getting a new index
 		assert.NotEmpty(t, task.Index)
-		assert.Equal(t, int64(18), task.Index)
+		assert.Equal(t, int64(33), task.Index)
 		err = s.Commit()
 		require.NoError(t, err)
 
@@ -169,6 +169,7 @@ func TestTask_Create(t *testing.T) {
 		}
 		err := task.Create(s, usr)
 		require.NoError(t, err)
+		require.NoError(t, s.Commit())
 		db.AssertExists(t, "task_buckets", map[string]interface{}{
 			"task_id":   task.ID,
 			"bucket_id": 22, // default bucket of project 6 but with a position of 2
@@ -260,6 +261,27 @@ func TestTask_Update(t *testing.T) {
 			"task_id":   1,
 			"bucket_id": 3,
 		}, false)
+	})
+	t.Run("marking a task as done should fire exactly ONE task.updated event", func(t *testing.T) {
+		db.LoadAndAssertFixtures(t)
+		s := db.NewSession()
+		defer s.Close()
+
+		// Clear any events from previous operations
+		events.ClearDispatchedEvents()
+
+		task := &Task{
+			ID:   1,
+			Done: true,
+		}
+		err := task.Update(s, u)
+		require.NoError(t, err)
+		err = s.Commit()
+		require.NoError(t, err)
+
+		// Verify exactly ONE task.updated event was dispatched
+		count := events.CountDispatchedEvents("task.updated")
+		assert.Equal(t, 1, count, "Expected exactly 1 task.updated event, got %d", count)
 	})
 	t.Run("move task to another project should use the default bucket", func(t *testing.T) {
 		db.LoadAndAssertFixtures(t)

@@ -24,7 +24,6 @@ import (
 	"strings"
 
 	"code.vikunja.io/api/pkg/config"
-	"code.vikunja.io/api/pkg/db"
 	"code.vikunja.io/api/pkg/log"
 	"code.vikunja.io/api/pkg/models"
 	"code.vikunja.io/api/pkg/modules/auth"
@@ -51,21 +50,21 @@ func InitializeLDAPConnection() {
 	if config.AuthLdapBaseDN.GetString() == "" {
 		log.Fatal("LDAP base DN is not configured")
 	}
-	if config.AuthLdapBindDN.GetString() == "" {
-		log.Fatal("LDAP bind DN is not configured")
-	}
-	if config.AuthLdapBindPassword.GetString() == "" {
-		log.Fatal("LDAP bind password is not configured")
-	}
 	if config.AuthLdapUserFilter.GetString() == "" {
 		log.Fatal("LDAP user filter is not configured")
 	}
 
-	l, err := ConnectAndBindToLDAPDirectory()
+	err := utils.RetryWithBackoff("LDAP server", func() error {
+		l, connErr := ConnectAndBindToLDAPDirectory()
+		if connErr == nil {
+			_ = l.Close()
+		}
+		return connErr
+	})
+
 	if err != nil {
-		log.Fatalf("Could not bind to LDAP server: %s", err)
+		log.Fatalf("Could not connect to LDAP server: %s", err)
 	}
-	_ = l.Close()
 }
 
 func ConnectAndBindToLDAPDirectory() (l *ldap.Conn, err error) {
@@ -90,13 +89,20 @@ func ConnectAndBindToLDAPDirectory() (l *ldap.Conn, err error) {
 
 	l, err = ldap.DialURL(url, opts...)
 	if err != nil {
-		log.Fatalf("Could not connect to LDAP server: %s", err)
+		return nil, fmt.Errorf("could not connect to LDAP server: %w", err)
 	}
 
-	err = l.Bind(
-		config.AuthLdapBindDN.GetString(),
-		config.AuthLdapBindPassword.GetString(),
-	)
+	bindDN := config.AuthLdapBindDN.GetString()
+	bindPassword := config.AuthLdapBindPassword.GetString()
+
+	if bindDN != "" && bindPassword != "" {
+		// Standard authentication
+		err = l.Bind(bindDN, bindPassword)
+	} else {
+		// Anonymous bind attempt (depending on the server, this call is explicit or automatic)
+		log.Info("No LDAP bind DN or password configured, attempting anonymous bind")
+		err = l.UnauthenticatedBind("")
+	}
 	return
 }
 
@@ -244,7 +250,7 @@ func AuthenticateUserInLDAP(s *xorm.Session, username, password string, syncGrou
 		return
 	}
 
-	err = syncUserGroups(l, u, userdn)
+	err = syncUserGroups(s, l, u, userdn)
 
 	return u, err
 }
@@ -303,10 +309,7 @@ func getOrCreateLdapUser(s *xorm.Session, entry *ldap.Entry) (u *user.User, err 
 	return
 }
 
-func syncUserGroups(l *ldap.Conn, u *user.User, userdn string) (err error) {
-	s := db.NewSession()
-	defer s.Close()
-
+func syncUserGroups(s *xorm.Session, l *ldap.Conn, u *user.User, userdn string) (err error) {
 	searchRequest := ldap.NewSearchRequest(
 		config.AuthLdapBaseDN.GetString(),
 		ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 0, 0, false,
@@ -347,14 +350,5 @@ func syncUserGroups(l *ldap.Conn, u *user.User, userdn string) (err error) {
 	}
 
 	err = models.SyncExternalTeamsForUser(s, u, teams, user.IssuerLDAP, "LDAP")
-	if err != nil {
-		return
-	}
-
-	err = s.Commit()
-	if err != nil {
-		_ = s.Rollback()
-	}
-
 	return
 }

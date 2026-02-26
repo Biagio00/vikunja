@@ -29,6 +29,9 @@
 							<FancyCheckbox v-model="activeColumns.done">
 								{{ $t('task.attributes.done') }}
 							</FancyCheckbox>
+							<FancyCheckbox v-model="activeColumns.project">
+								{{ $t('task.attributes.project') }}
+							</FancyCheckbox>
 							<FancyCheckbox v-model="activeColumns.title">
 								{{ $t('task.attributes.title') }}
 							</FancyCheckbox>
@@ -40,6 +43,9 @@
 							</FancyCheckbox>
 							<FancyCheckbox v-model="activeColumns.assignees">
 								{{ $t('task.attributes.assignees') }}
+							</FancyCheckbox>
+							<FancyCheckbox v-model="activeColumns.commentCount">
+								{{ $t('task.attributes.commentCount') }}
 							</FancyCheckbox>
 							<FancyCheckbox v-model="activeColumns.dueDate">
 								{{ $t('task.attributes.dueDate') }}
@@ -105,6 +111,9 @@
 											@click="sort('done', $event)"
 										/>
 									</th>
+									<th v-if="activeColumns.project">
+										{{ $t('task.attributes.project') }}
+									</th>
 									<th v-if="activeColumns.title">
 										{{ $t('task.attributes.title') }}
 										<Sort
@@ -131,6 +140,9 @@
 											:order="sortBy.due_date"
 											@click="sort('due_date', $event)"
 										/>
+									</th>
+									<th v-if="activeColumns.commentCount">
+										{{ $t('task.attributes.commentCount') }}
 									</th>
 									<th v-if="activeColumns.startDate">
 										{{ $t('task.attributes.startDate') }}
@@ -200,10 +212,20 @@
 											variant="small"
 										/>
 									</td>
-									<td v-if="activeColumns.title">
-										<RouterLink :to="taskDetailRoutes[t.id]">
-											{{ t.title }}
+									<td v-if="activeColumns.project">
+										<RouterLink
+											v-if="projectStore.projects[t.projectId]"
+											:to="{ name: 'project.index', params: { projectId: t.projectId } }"
+										>
+											{{ projectStore.projects[t.projectId].title }}
 										</RouterLink>
+									</td>
+									<td v-if="activeColumns.title">
+										<TaskGlanceTooltip :task="t">
+											<RouterLink :to="taskDetailRoutes[t.id]">
+												{{ t.title }}
+											</RouterLink>
+										</TaskGlanceTooltip>
 									</td>
 									<td v-if="activeColumns.priority">
 										<PriorityLabel
@@ -228,6 +250,9 @@
 										v-if="activeColumns.dueDate"
 										:date="t.dueDate"
 									/>
+									<td v-if="activeColumns.commentCount">
+										<CommentCount :task="t" />
+									</td>
 									<DateTableCell
 										v-if="activeColumns.startDate"
 										:date="t.startDate"
@@ -283,7 +308,9 @@ import Done from '@/components/misc/Done.vue'
 import User from '@/components/misc/User.vue'
 import PriorityLabel from '@/components/tasks/partials/PriorityLabel.vue'
 import Labels from '@/components/tasks/partials/Labels.vue'
+import TaskGlanceTooltip from '@/components/tasks/partials/TaskGlanceTooltip.vue'
 import DateTableCell from '@/components/tasks/partials/DateTableCell.vue'
+import CommentCount from '@/components/tasks/partials/CommentCount.vue'
 import FancyCheckbox from '@/components/input/FancyCheckbox.vue'
 import Sort from '@/components/tasks/partials/Sort.vue'
 import FilterPopup from '@/components/project/partials/FilterPopup.vue'
@@ -298,6 +325,7 @@ import AssigneeList from '@/components/tasks/partials/AssigneeList.vue'
 import type {IProjectView} from '@/modelTypes/IProjectView'
 import { camelCase } from 'change-case'
 import {isSavedFilter} from '@/services/savedFilter'
+import {useProjectStore} from '@/stores/projects'
 
 const props = defineProps<{
 	isLoadingProject: boolean,
@@ -305,9 +333,12 @@ const props = defineProps<{
 	viewId: IProjectView['id'],
 }>()
 
+const projectStore = useProjectStore()
+
 const ACTIVE_COLUMNS_DEFAULT = {
 	index: true,
 	done: true,
+	project: false,
 	title: true,
 	priority: false,
 	labels: true,
@@ -320,6 +351,7 @@ const ACTIVE_COLUMNS_DEFAULT = {
 	updated: false,
 	createdBy: false,
 	doneAt: false,
+	commentCount: false,
 }
 
 const SORT_BY_DEFAULT: SortBy = {
@@ -329,7 +361,12 @@ const SORT_BY_DEFAULT: SortBy = {
 const activeColumns = useStorage('tableViewColumns', {...ACTIVE_COLUMNS_DEFAULT})
 const sortBy = useStorage<SortBy>('tableViewSortBy', {...SORT_BY_DEFAULT})
 
-const taskList = useTaskList(() => props.projectId, () => props.viewId, sortBy.value)
+const taskList = useTaskList(
+	() => props.projectId, 
+	() => props.viewId, 
+	sortBy.value,
+	() => ['comment_count', 'is_unread'],
+)
 
 const {
 	loading,
@@ -339,10 +376,6 @@ const {
 	sortByParam,
 } = taskList
 const tasks: Ref<ITask[]> = taskList.tasks
-
-Object.assign(params.value, {
-	filter: '',
-})
 
 watch(
 	() => activeColumns.value,

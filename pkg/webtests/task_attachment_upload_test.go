@@ -28,7 +28,7 @@ import (
 	"code.vikunja.io/api/pkg/modules/auth"
 	"code.vikunja.io/api/pkg/routes"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -96,7 +96,7 @@ func TestTaskAttachmentUploadSize(t *testing.T) {
 			req.Header.Set(echo.HeaderContentType, writer.FormDataContentType())
 
 			// Add JWT token to request header for authentication
-			token, err := auth.NewUserJWTAuthtoken(&testuser1, false)
+			token, err := auth.NewUserJWTAuthtoken(&testuser1, "test-session-id")
 			require.NoError(t, err)
 			req.Header.Set("Authorization", "Bearer "+token)
 

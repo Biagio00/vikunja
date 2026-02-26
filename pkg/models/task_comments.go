@@ -34,9 +34,11 @@ type TaskComment struct {
 	Comment  string     `xorm:"text not null" json:"comment" valid:"dbtext,required"`
 	AuthorID int64      `xorm:"not null" json:"-"`
 	Author   *user.User `xorm:"-" json:"author"`
-	TaskID   int64      `xorm:"not null" json:"-" param:"task"`
+	TaskID   int64      `xorm:"index not null" json:"-" param:"task"`
 
 	Reactions ReactionMap `xorm:"-" json:"reactions"`
+
+	OrderBy string `xorm:"-" json:"-" query:"order_by"`
 
 	Created time.Time `xorm:"created" json:"created"`
 	Updated time.Time `xorm:"updated" json:"updated"`
@@ -118,7 +120,12 @@ func (tc *TaskComment) CreateWithTimestamps(s *xorm.Session, a web.Auth) (err er
 // @Failure 404 {object} web.HTTPError "The task comment was not found."
 // @Failure 500 {object} models.Message "Internal error"
 // @Router /tasks/{taskID}/comments/{commentID} [delete]
-func (tc *TaskComment) Delete(s *xorm.Session, _ web.Auth) error {
+func (tc *TaskComment) Delete(s *xorm.Session, a web.Auth) error {
+	err := tc.ReadOne(s, a)
+	if err != nil {
+		return err
+	}
+
 	deleted, err := s.
 		ID(tc.ID).
 		NoAutoCondition().
@@ -131,6 +138,7 @@ func (tc *TaskComment) Delete(s *xorm.Session, _ web.Auth) error {
 		return err
 	}
 
+	doer, _ := user.GetFromAuth(a)
 	task, err := GetTaskByIDSimple(s, tc.TaskID)
 	if err != nil {
 		return err
@@ -139,7 +147,7 @@ func (tc *TaskComment) Delete(s *xorm.Session, _ web.Auth) error {
 	return events.Dispatch(&TaskCommentDeletedEvent{
 		Task:    &task,
 		Comment: tc,
-		Doer:    tc.Author,
+		Doer:    doer,
 	})
 }
 
@@ -237,6 +245,7 @@ func (tc *TaskComment) ReadOne(s *xorm.Session, _ web.Auth) (err error) {
 // @Produce json
 // @Security JWTKeyAuth
 // @Param taskID path int true "Task ID"
+// @Param order_by query string false "Sort order. Can be 'asc' for ascending or 'desc' for descending. Defaults to 'asc'."
 // @Success 200 {array} models.TaskComment "The array with all task comments"
 // @Failure 500 {object} models.Message "Internal error"
 // @Router /tasks/{taskID}/comments [get]
@@ -251,13 +260,13 @@ func (tc *TaskComment) ReadAll(s *xorm.Session, auth web.Auth, search string, pa
 		return nil, 0, 0, ErrGenericForbidden{}
 	}
 
-	return getAllCommentsForTasksWithoutPermissionCheck(s, []int64{tc.TaskID}, search, page, perPage)
+	return getAllCommentsForTasksWithoutPermissionCheck(s, []int64{tc.TaskID}, search, page, perPage, tc.OrderBy)
 }
 
 func addCommentsToTasks(s *xorm.Session, taskIDs []int64, taskMap map[int64]*Task) (err error) {
 	// Only fetch the first page of comments when expanding tasks to avoid
 	// loading all comments for tasks with many comments.
-	comments, _, _, err := getAllCommentsForTasksWithoutPermissionCheck(s, taskIDs, "", 1, 50)
+	comments, _, _, err := getAllCommentsForTasksWithoutPermissionCheck(s, taskIDs, "", 1, 50, "asc")
 	if err != nil {
 		return err
 	}
@@ -274,12 +283,54 @@ func addCommentsToTasks(s *xorm.Session, taskIDs []int64, taskMap map[int64]*Tas
 	return nil
 }
 
-func getAllCommentsForTasksWithoutPermissionCheck(s *xorm.Session, taskIDs []int64, search string, page int, perPage int) (result []*TaskComment, resultCount int, numberOfTotalItems int64, err error) {
+func addCommentCountToTasks(s *xorm.Session, taskIDs []int64, taskMap map[int64]*Task) error {
+	if len(taskIDs) == 0 {
+		return nil
+	}
+
+	zero := int64(0)
+	for _, taskID := range taskIDs {
+		if task, ok := taskMap[taskID]; ok {
+			task.CommentCount = &zero
+		}
+	}
+
+	type CommentCount struct {
+		TaskID int64 `xorm:"task_id"`
+		Count  int64 `xorm:"count"`
+	}
+
+	counts := []CommentCount{}
+
+	if err := s.
+		Select("task_id, COUNT(*) as count").
+		Where(builder.In("task_id", taskIDs)).
+		GroupBy("task_id").
+		Table("task_comments").
+		Find(&counts); err != nil {
+		return err
+	}
+
+	for _, c := range counts {
+		if task, ok := taskMap[c.TaskID]; ok {
+			task.CommentCount = &c.Count
+		}
+	}
+
+	return nil
+}
+
+func getAllCommentsForTasksWithoutPermissionCheck(s *xorm.Session, taskIDs []int64, search string, page int, perPage int, orderBy string) (result []*TaskComment, resultCount int, numberOfTotalItems int64, err error) {
 	// Because we can't extend the type in general, we need to do this here.
 	// Not a good solution, but saves performance.
 	type TaskCommentWithAuthor struct {
 		TaskComment
 		AuthorFromDB *user.User `xorm:"extends" json:"-"`
+	}
+
+	order := "asc"
+	if orderBy == "desc" {
+		order = "desc"
 	}
 
 	limit, start := getLimitFromPageIndex(page, perPage)
@@ -294,7 +345,7 @@ func getAllCommentsForTasksWithoutPermissionCheck(s *xorm.Session, taskIDs []int
 	query := s.
 		Where(builder.And(where...)).
 		Join("LEFT", "users", "users.id = task_comments.author_id").
-		OrderBy("task_comments.created asc")
+		OrderBy("task_comments.created " + order)
 	if limit > 0 {
 		query = query.Limit(limit, start)
 	}

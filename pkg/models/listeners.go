@@ -17,7 +17,6 @@
 package models
 
 import (
-	"context"
 	"encoding/json"
 	"strconv"
 	"time"
@@ -69,12 +68,7 @@ func RegisterListeners() {
 	events.RegisterListener((&TaskRelationDeletedEvent{}).Name(), &HandleTaskUpdateLastUpdated{})
 	events.RegisterListener((&TaskCreatedEvent{}).Name(), &UpdateTaskInSavedFilterViews{})
 	events.RegisterListener((&TaskUpdatedEvent{}).Name(), &UpdateTaskInSavedFilterViews{})
-	if config.TypesenseEnabled.GetBool() {
-		events.RegisterListener((&TaskDeletedEvent{}).Name(), &RemoveTaskFromTypesense{})
-		events.RegisterListener((&TaskCreatedEvent{}).Name(), &AddTaskToTypesense{})
-		events.RegisterListener((&TaskUpdatedEvent{}).Name(), &UpdateTaskInTypesense{})
-		events.RegisterListener((&TaskPositionsRecalculatedEvent{}).Name(), &UpdateTaskPositionsInTypesense{})
-	}
+	events.RegisterListener((&TaskCommentCreatedEvent{}).Name(), &MarkTaskUnreadOnComment{})
 	if config.WebhooksEnabled.GetBool() {
 		RegisterEventForWebhook(&TaskCreatedEvent{})
 		RegisterEventForWebhook(&TaskUpdatedEvent{})
@@ -92,6 +86,8 @@ func RegisterListeners() {
 		RegisterEventForWebhook(&ProjectDeletedEvent{})
 		RegisterEventForWebhook(&ProjectSharedWithUserEvent{})
 		RegisterEventForWebhook(&ProjectSharedWithTeamEvent{})
+		RegisterEventForWebhook(&TaskReminderFiredEvent{})
+		RegisterEventForWebhook(&TaskOverdueEvent{})
 	}
 }
 
@@ -159,7 +155,7 @@ func notifyMentionedUsers(sess *xorm.Session, task *Task, text string, n notific
 			continue
 		}
 
-		err = notifications.Notify(u, n)
+		err = notifications.Notify(u, n, sess)
 		if err != nil {
 			return users, err
 		}
@@ -223,13 +219,13 @@ func (s *SendTaskCommentNotification) Handle(msg *message.Message) (err error) {
 			Task:    event.Task,
 			Comment: event.Comment,
 		}
-		err = notifications.Notify(subscriber.User, n)
+		err = notifications.Notify(subscriber.User, n, sess)
 		if err != nil {
 			return
 		}
 	}
 
-	return
+	return sess.Commit()
 }
 
 // HandleTaskCommentEditMentions  represents a listener
@@ -259,7 +255,10 @@ func (s *HandleTaskCommentEditMentions) Handle(msg *message.Message) (err error)
 		Mentioned: true,
 	}
 	_, err = notifyMentionedUsers(sess, event.Task, event.Comment.Comment, n)
-	return err
+	if err != nil {
+		return err
+	}
+	return sess.Commit()
 }
 
 // SendTaskAssignedNotification  represents a listener
@@ -312,7 +311,7 @@ func (s *SendTaskAssignedNotification) Handle(msg *message.Message) (err error) 
 			Assignee: event.Assignee,
 			Target:   subscriber.User,
 		}
-		err = notifications.Notify(subscriber.User, n)
+		err = notifications.Notify(subscriber.User, n, sess)
 		if err != nil {
 			return
 		}
@@ -320,7 +319,7 @@ func (s *SendTaskAssignedNotification) Handle(msg *message.Message) (err error) 
 		notifiedUsers[subscriber.UserID] = true
 	}
 
-	return nil
+	return sess.Commit()
 }
 
 // SendTaskDeletedNotification  represents a listener
@@ -365,13 +364,13 @@ func (s *SendTaskDeletedNotification) Handle(msg *message.Message) (err error) {
 			Doer: event.Doer,
 			Task: event.Task,
 		}
-		err = notifications.Notify(subscriber.User, n)
+		err = notifications.Notify(subscriber.User, n, sess)
 		if err != nil {
 			return
 		}
 	}
 
-	return nil
+	return sess.Commit()
 }
 
 // HandleTaskCreateMentions  represents a listener
@@ -400,7 +399,10 @@ func (s *HandleTaskCreateMentions) Handle(msg *message.Message) (err error) {
 		IsNew: true,
 	}
 	_, err = notifyMentionedUsers(sess, event.Task, event.Task.Description, n)
-	return err
+	if err != nil {
+		return err
+	}
+	return sess.Commit()
 }
 
 // HandleTaskUpdatedMentions  represents a listener
@@ -430,7 +432,10 @@ func (s *HandleTaskUpdatedMentions) Handle(msg *message.Message) (err error) {
 	}
 
 	_, err = notifyMentionedUsers(sess, event.Task, event.Task.Description, n)
-	return err
+	if err != nil {
+		return err
+	}
+	return sess.Commit()
 }
 
 // HandleTaskUpdateLastUpdated  represents a listener
@@ -483,122 +488,12 @@ func (s *HandleTaskUpdateLastUpdated) Handle(msg *message.Message) (err error) {
 	sess := db.NewSession()
 	defer sess.Close()
 
-	return updateTaskLastUpdated(sess, &Task{ID: taskIDInt})
-}
-
-// RemoveTaskFromTypesense represents a listener
-type RemoveTaskFromTypesense struct {
-}
-
-// Name defines the name for the RemoveTaskFromTypesense listener
-func (s *RemoveTaskFromTypesense) Name() string {
-	return "typesense.task.remove"
-}
-
-// Handle is executed when the event RemoveTaskFromTypesense listens on is fired
-func (s *RemoveTaskFromTypesense) Handle(msg *message.Message) (err error) {
-	event := &TaskDeletedEvent{}
-	err = json.Unmarshal(msg.Payload, event)
+	err = updateTaskLastUpdated(sess, &Task{ID: taskIDInt})
 	if err != nil {
 		return err
 	}
 
-	log.Debugf("[Typesense Sync] Removing task %d from Typesense", event.Task.ID)
-
-	_, err = typesenseClient.
-		Collection("tasks").
-		Document(strconv.FormatInt(event.Task.ID, 10)).
-		Delete(context.Background())
-	return err
-}
-
-// AddTaskToTypesense  represents a listener
-type AddTaskToTypesense struct {
-}
-
-// Name defines the name for the AddTaskToTypesense listener
-func (l *AddTaskToTypesense) Name() string {
-	return "typesense.task.add"
-}
-
-// Handle is executed when the event AddTaskToTypesense listens on is fired
-func (l *AddTaskToTypesense) Handle(msg *message.Message) (err error) {
-	event := &TaskCreatedEvent{}
-	err = json.Unmarshal(msg.Payload, event)
-	if err != nil {
-		return err
-	}
-
-	log.Debugf("New task %d created, adding to typesense…", event.Task.ID)
-
-	s := db.NewSession()
-	defer s.Close()
-
-	task := make(map[int64]*Task, 1)
-	task[event.Task.ID] = event.Task // Will be filled with all data by the Typesense connector
-
-	return reindexTasksInTypesense(s, task)
-}
-
-// UpdateTaskInTypesense  represents a listener
-type UpdateTaskInTypesense struct {
-}
-
-// Name defines the name for the UpdateTaskInTypesense listener
-func (l *UpdateTaskInTypesense) Name() string {
-	return "typesense.task.update"
-}
-
-// Handle is executed when the event UpdateTaskInTypesense listens on is fired
-func (l *UpdateTaskInTypesense) Handle(msg *message.Message) (err error) {
-	event := &TaskUpdatedEvent{}
-	err = json.Unmarshal(msg.Payload, event)
-	if err != nil {
-		return err
-	}
-
-	s := db.NewSession()
-	defer s.Close()
-
-	task := make(map[int64]*Task, 1)
-	task[event.Task.ID] = event.Task // Will be filled with all data by the Typesense connector
-
-	return reindexTasksInTypesense(s, task)
-}
-
-// UpdateTaskPositionsInTypesense  represents a listener
-type UpdateTaskPositionsInTypesense struct {
-}
-
-// Name defines the name for the UpdateTaskPositionsInTypesense listener
-func (l *UpdateTaskPositionsInTypesense) Name() string {
-	return "typesense.task.position.update"
-}
-
-// Handle is executed when the event UpdateTaskPositionsInTypesense listens on is fired
-func (l *UpdateTaskPositionsInTypesense) Handle(msg *message.Message) (err error) {
-	event := &TaskPositionsRecalculatedEvent{}
-	err = json.Unmarshal(msg.Payload, event)
-	if err != nil {
-		return err
-	}
-
-	taskIDs := []int64{}
-	for _, position := range event.NewTaskPositions {
-		taskIDs = append(taskIDs, position.TaskID)
-	}
-
-	s := db.NewSession()
-	defer s.Close()
-
-	tasks, err := GetTasksSimpleByIDs(s, taskIDs)
-
-	taskMap := make(map[int64]*Task, 1)
-	for _, task := range tasks {
-		taskMap[task.ID] = task
-	}
-
-	return reindexTasksInTypesense(s, taskMap)
+	return sess.Commit()
 }
 
 // IncreaseAttachmentCounter  represents a listener
@@ -744,14 +639,9 @@ func (l *UpdateTaskInSavedFilterViews) Handle(msg *message.Message) (err error) 
 		if err != nil {
 			return
 		}
-
-		task := make(map[int64]*Task, 1)
-		task[event.Task.ID] = event.Task // Will be filled with all data by the Typesense connector
-
-		return reindexTasksInTypesense(s, task)
 	}
 
-	return nil
+	return s.Commit()
 }
 
 ///////
@@ -815,13 +705,13 @@ func (s *SendProjectCreatedNotification) Handle(msg *message.Message) (err error
 			Doer:    event.Doer,
 			Project: event.Project,
 		}
-		err = notifications.Notify(subscriber.User, n)
+		err = notifications.Notify(subscriber.User, n, sess)
 		if err != nil {
 			return
 		}
 	}
 
-	return nil
+	return sess.Commit()
 }
 
 // WebhookListener represents a listener
@@ -895,65 +785,152 @@ func getProjectIDFromAnyEvent(eventPayload map[string]interface{}) int64 {
 	return 0
 }
 
+func reloadDoerInEvent(s *xorm.Session, event map[string]interface{}) (doerID int64, err error) {
+	doer, has := event["doer"]
+	if !has || doer == nil {
+		return 0, nil
+	}
+
+	// doer can be null in incoming payloads, so guard the type assertion
+	d, ok := doer.(map[string]interface{})
+	if !ok {
+		return 0, nil
+	}
+
+	rawDoerID, has := d["id"]
+	if !has || rawDoerID == nil {
+		return 0, nil
+	}
+
+	doerID = getIDAsInt64(rawDoerID)
+	if doerID <= 0 {
+		return 0, nil
+	}
+
+	fullDoer, err := user.GetUserByID(s, doerID)
+	if err != nil && !user.IsErrUserDoesNotExist(err) {
+		return 0, err
+	}
+	if err == nil {
+		event["doer"] = fullDoer
+	}
+
+	return doerID, nil
+}
+
+func reloadTaskInEvent(s *xorm.Session, event map[string]interface{}, doerID int64) error {
+	task, has := event["task"]
+	if !has || task == nil || doerID == 0 {
+		return nil
+	}
+
+	// guard the type assertion for task as well
+	t, ok := task.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	taskID, has := t["id"]
+	if !has || taskID == nil {
+		return nil
+	}
+
+	id := getIDAsInt64(taskID)
+	if id <= 0 {
+		return nil
+	}
+
+	fullTask := Task{
+		ID: id,
+		Expand: []TaskCollectionExpandable{
+			TaskCollectionExpandBuckets,
+		},
+	}
+	err := fullTask.ReadOne(s, &user.User{ID: doerID})
+	if err != nil && !IsErrTaskDoesNotExist(err) {
+		return err
+	}
+	if err == nil {
+		event["task"] = fullTask
+	}
+
+	return nil
+}
+
+func reloadProjectInEvent(s *xorm.Session, event map[string]interface{}, projectID, doerID int64) error {
+	_, has := event["project"]
+	if !has || doerID == 0 {
+		return nil
+	}
+
+	project, err := GetProjectSimpleByID(s, projectID)
+	if err != nil {
+		if IsErrProjectDoesNotExist(err) {
+			return nil
+		}
+		return err
+	}
+
+	err = project.ReadOne(s, &user.User{ID: doerID})
+	if err != nil && !IsErrProjectDoesNotExist(err) {
+		return err
+	}
+
+	if err == nil {
+		event["project"] = project
+	}
+
+	return nil
+}
+
+func reloadAssigneeInEvent(s *xorm.Session, event map[string]interface{}) error {
+	assignee, has := event["assignee"]
+	if !has || assignee == nil {
+		return nil
+	}
+
+	a, ok := assignee.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	assigneeID := getIDAsInt64(a["id"])
+	if assigneeID <= 0 {
+		return nil
+	}
+
+	fullAssignee, err := user.GetUserByID(s, assigneeID)
+	if err != nil && !user.IsErrUserDoesNotExist(err) {
+		return err
+	}
+	if err == nil {
+		event["assignee"] = fullAssignee
+	}
+
+	return nil
+}
+
 func reloadEventData(s *xorm.Session, event map[string]interface{}, projectID int64) (eventWithData map[string]interface{}, doerID int64, err error) {
 	// Load event data again so that it is always populated in the webhook payload
-	if doer, has := event["doer"]; has && doer != nil {
-		// doer can be null in incoming payloads, so guard the type assertion
-		d, ok := doer.(map[string]interface{})
-		if ok {
-			if rawDoerID, has := d["id"]; has && rawDoerID != nil {
-				doerID = getIDAsInt64(rawDoerID)
-				if doerID > 0 {
-					fullDoer, err := user.GetUserByID(s, doerID)
-					if err != nil && !user.IsErrUserDoesNotExist(err) {
-						return nil, 0, err
-					}
-					if err == nil {
-						event["doer"] = fullDoer
-					}
-				}
-			}
-		}
+
+	doerID, err = reloadDoerInEvent(s, event)
+	if err != nil {
+		return nil, 0, err
 	}
 
-	if task, has := event["task"]; has && task != nil && doerID != 0 {
-		// guard the type assertion for task as well
-		t, ok := task.(map[string]interface{})
-		if ok {
-			if taskID, has := t["id"]; has && taskID != nil {
-				id := getIDAsInt64(taskID)
-				if id > 0 {
-					fullTask := Task{
-						ID: id,
-						Expand: []TaskCollectionExpandable{
-							TaskCollectionExpandBuckets,
-						},
-					}
-					err = fullTask.ReadOne(s, &user.User{ID: doerID})
-					if err != nil && !IsErrTaskDoesNotExist(err) {
-						return
-					}
-					if err == nil {
-						event["task"] = fullTask
-					}
-				}
-			}
-		}
+	err = reloadTaskInEvent(s, event, doerID)
+	if err != nil {
+		return nil, doerID, err
 	}
 
-	if _, has := event["project"]; has && doerID != 0 {
-		var project *Project
-		project, err = GetProjectSimpleByID(s, projectID)
-		if err != nil && !IsErrProjectDoesNotExist(err) {
-			return
-		}
-		err = project.ReadOne(s, &user.User{ID: doerID})
-		if err != nil && !IsErrProjectDoesNotExist(err) {
-			return
-		}
-		if err == nil {
-			event["project"] = project
-		}
+	err = reloadProjectInEvent(s, event, projectID, doerID)
+	if err != nil {
+		return nil, doerID, err
+	}
+
+	err = reloadAssigneeInEvent(s, event)
+	if err != nil {
+		return nil, doerID, err
 	}
 
 	return event, doerID, nil
@@ -1019,13 +996,18 @@ func (wl *WebhookListener) Handle(msg *message.Message) (err error) {
 	for _, webhook := range matchingWebhooks {
 
 		if _, has := event["project"]; !has {
-			project := &Project{ID: webhook.ProjectID}
-			err = project.ReadOne(s, &user.User{ID: doerID})
+			project, err := GetProjectSimpleByID(s, webhook.ProjectID)
 			if err != nil && !IsErrProjectDoesNotExist(err) {
 				log.Errorf("Could not load project for webhook %d: %s", webhook.ID, err)
 			}
-			if err == nil {
-				event["project"] = project
+			if project != nil {
+				err = project.ReadOne(s, &user.User{ID: doerID})
+				if err != nil && !IsErrProjectDoesNotExist(err) {
+					log.Errorf("Could not load project for webhook %d: %s", webhook.ID, err)
+				}
+				if err == nil {
+					event["project"] = project
+				}
 			}
 		}
 
@@ -1096,11 +1078,6 @@ func (l *CleanupTaskAssignmentsAfterTeamRemoval) Handle(msg *message.Message) (e
 		return nil
 	}
 
-	err = s.Begin()
-	if err != nil {
-		return err
-	}
-
 	err = cleanupTaskMembersAfterTeamRemoval(s, event.Team.ID, event.Member.ID)
 	if err != nil {
 		_ = s.Rollback()
@@ -1160,10 +1137,6 @@ func (s *HandleUserDataExport) Handle(msg *message.Message) (err error) {
 
 	sess := db.NewSession()
 	defer sess.Close()
-	err = sess.Begin()
-	if err != nil {
-		return
-	}
 
 	err = ExportUserData(sess, event.User)
 	if err != nil {
@@ -1173,6 +1146,75 @@ func (s *HandleUserDataExport) Handle(msg *message.Message) (err error) {
 
 	log.Debugf("Done exporting user data for user %d...", event.User.ID)
 
-	err = sess.Commit()
-	return err
+	return sess.Commit()
+}
+
+type MarkTaskUnreadOnComment struct {
+}
+
+func (s *MarkTaskUnreadOnComment) Name() string {
+	return "task.comment.mark.unread"
+}
+
+func (s *MarkTaskUnreadOnComment) Handle(msg *message.Message) (err error) {
+	event := &TaskCommentCreatedEvent{}
+	err = json.Unmarshal(msg.Payload, event)
+	if err != nil {
+		return err
+	}
+
+	sess := db.NewSession()
+	defer sess.Close()
+
+	project, err := GetProjectSimpleByID(sess, event.Task.ProjectID)
+	if err != nil {
+		_ = sess.Rollback()
+		return err
+	}
+
+	users, err := ListUsersFromProject(sess, project, event.Doer, "")
+	if err != nil {
+		_ = sess.Rollback()
+		return err
+	}
+
+	// Get existing unread statuses for this task
+	existingUnreadStatuses := []*TaskUnreadStatus{}
+	err = sess.
+		Where("task_id = ?", event.Task.ID).
+		Find(&existingUnreadStatuses)
+	if err != nil {
+		_ = sess.Rollback()
+		return err
+	}
+
+	// Create a set of existing user IDs for quick lookup
+	existingUserIDs := make(map[int64]bool)
+	for _, status := range existingUnreadStatuses {
+		existingUserIDs[status.UserID] = true
+	}
+
+	// Build list of new unread statuses
+	unreadStatuses := []*TaskUnreadStatus{}
+	for _, u := range users {
+		// Skip the comment author and users who already have unread status
+		if u.ID == event.Doer.ID || existingUserIDs[u.ID] {
+			continue
+		}
+		unreadStatuses = append(unreadStatuses, &TaskUnreadStatus{
+			TaskID: event.Task.ID,
+			UserID: u.ID,
+		})
+	}
+
+	// Bulk insert new unread statuses
+	if len(unreadStatuses) > 0 {
+		_, err = sess.Insert(&unreadStatuses)
+		if err != nil {
+			_ = sess.Rollback()
+			return err
+		}
+	}
+
+	return sess.Commit()
 }

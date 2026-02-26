@@ -58,11 +58,10 @@ func (*TaskAttachment) TableName() string {
 }
 
 // NewAttachment creates a new task attachment
-// Note: I'm not sure if only accepting an io.ReadCloser and not an afero.File or os.File instead is a good way of doing things.
-func (ta *TaskAttachment) NewAttachment(s *xorm.Session, f io.ReadCloser, realname string, realsize uint64, a web.Auth) error {
+func (ta *TaskAttachment) NewAttachment(s *xorm.Session, f io.ReadSeeker, realname string, realsize uint64, a web.Auth) error {
 
-	// Store the file
-	file, err := files.Create(f, realname, realsize, a)
+	// Store the file using the existing session to avoid nested transactions
+	file, err := files.CreateWithSession(s, f, realname, realsize, a)
 	if err != nil {
 		if files.IsErrFileIsTooLarge(err) {
 			return ErrTaskAttachmentIsTooLarge{Size: realsize}
@@ -121,7 +120,17 @@ func (ta *TaskAttachment) ReadOne(s *xorm.Session, _ web.Auth) (err error) {
 	// Get the file
 	ta.File = &files.File{ID: ta.FileID}
 	err = ta.File.LoadFileMetaByID()
-	return
+	if err != nil {
+		return
+	}
+
+	// Get the creator (non-fatal if user doesn't exist)
+	ta.CreatedBy, err = user.GetUserByID(s, ta.CreatedByID)
+	if err != nil && !user.IsErrUserDoesNotExist(err) {
+		return err
+	}
+
+	return nil
 }
 
 // ReadAll returns a project with all attachments

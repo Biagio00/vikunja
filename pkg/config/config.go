@@ -44,6 +44,7 @@ const (
 	ServiceJWTSecret                      Key = `service.JWTSecret`
 	ServiceJWTTTL                         Key = `service.jwtttl`
 	ServiceJWTTTLLong                     Key = `service.jwtttllong`
+	ServiceJWTTTLShort                    Key = `service.jwtttlshort`
 	ServiceInterface                      Key = `service.interface`
 	ServiceUnixSocket                     Key = `service.unixsocket`
 	ServiceUnixSocketMode                 Key = `service.unixsocketmode`
@@ -65,6 +66,7 @@ const (
 	ServiceMaxAvatarSize                  Key = `service.maxavatarsize`
 	ServiceAllowIconChanges               Key = `service.allowiconchanges`
 	ServiceCustomLogoURL                  Key = `service.customlogourl`
+	ServiceCustomLogoURLDark              Key = `service.customlogourldark`
 	ServiceEnablePublicTeams              Key = `service.enablepublicteams`
 	ServiceBcryptRounds                   Key = `service.bcryptrounds`
 	ServiceEnableOpenIDTeamUserOnlySearch Key = `service.enableopenidteamusersearch`
@@ -115,10 +117,6 @@ const (
 	DatabaseTLS                   Key = `database.tls`
 	DatabaseSchema                Key = `database.schema`
 
-	TypesenseEnabled Key = `typesense.enabled`
-	TypesenseURL     Key = `typesense.url`
-	TypesenseAPIKey  Key = `typesense.apikey`
-
 	MailerEnabled       Key = `mailer.enabled`
 	MailerHost          Key = `mailer.host`
 	MailerPort          Key = `mailer.port`
@@ -158,6 +156,17 @@ const (
 
 	FilesBasePath Key = `files.basepath`
 	FilesMaxSize  Key = `files.maxsize`
+	FilesType     Key = `files.type`
+
+	// S3 Configuration
+	FilesS3Endpoint       Key = `files.s3.endpoint`
+	FilesS3Bucket         Key = `files.s3.bucket`
+	FilesS3Region         Key = `files.s3.region`
+	FilesS3AccessKey      Key = `files.s3.accesskey`
+	FilesS3SecretKey      Key = `files.s3.secretkey`
+	FilesS3UsePathStyle   Key = `files.s3.usepathstyle`
+	FilesS3DisableSigning Key = `files.s3.disablesigning`
+	FilesS3TempDir        Key = `files.s3.tempdir`
 
 	MigrationTodoistEnable             Key = `migration.todoist.enable`
 	MigrationTodoistClientID           Key = `migration.todoist.clientid`
@@ -176,6 +185,7 @@ const (
 	CorsMaxAge  Key = `cors.maxage`
 
 	AvatarGravaterExpiration Key = `avatar.gravatarexpiration`
+	AvatarGravatarBaseURL    Key = `avatar.gravatarbaseurl`
 
 	BackgroundsEnabled               Key = `backgrounds.enabled`
 	BackgroundsUploadEnabled         Key = `backgrounds.providers.upload.enabled`
@@ -323,6 +333,7 @@ func InitDefaultConfig() {
 	ServiceJWTSecret.setDefault(random)
 	ServiceJWTTTL.setDefault(259200)      // 72 hours
 	ServiceJWTTTLLong.setDefault(2592000) // 30 days
+	ServiceJWTTTLShort.setDefault(600)    // 10 minutes
 	ServiceInterface.setDefault(":3456")
 	ServiceUnixSocket.setDefault("")
 	ServicePublicURL.setDefault("")
@@ -383,9 +394,6 @@ func InitDefaultConfig() {
 	DatabaseTLS.setDefault("false")
 	DatabaseSchema.setDefault("public")
 
-	// Typesense
-	TypesenseEnabled.setDefault(false)
-
 	// Mailer
 	MailerEnabled.setDefault(false)
 	MailerHost.setDefault("")
@@ -426,6 +434,16 @@ func InitDefaultConfig() {
 	// Files
 	FilesBasePath.setDefault("files")
 	FilesMaxSize.setDefault("20MB")
+	FilesType.setDefault("local")
+	// S3 Configuration
+	FilesS3Endpoint.setDefault("")
+	FilesS3Bucket.setDefault("")
+	FilesS3Region.setDefault("")
+	FilesS3AccessKey.setDefault("")
+	FilesS3SecretKey.setDefault("")
+	FilesS3UsePathStyle.setDefault(false)
+	FilesS3DisableSigning.setDefault(false)
+	FilesS3TempDir.setDefault("")
 	// Cors
 	CorsEnable.setDefault(true)
 	CorsOrigins.setDefault([]string{"http://127.0.0.1:*", "http://localhost:*"})
@@ -436,6 +454,7 @@ func InitDefaultConfig() {
 	MigrationMicrosoftTodoEnable.setDefault(false)
 	// Avatar
 	AvatarGravaterExpiration.setDefault(3600)
+	AvatarGravatarBaseURL.setDefault("https://www.gravatar.com")
 	// Project Backgrounds
 	BackgroundsEnabled.setDefault(true)
 	BackgroundsUploadEnabled.setDefault(true)
@@ -584,6 +603,12 @@ func InitConfig() {
 	}
 
 	readConfigValuesFromFiles()
+
+	if _, err := url.ParseRequestURI(AvatarGravatarBaseURL.GetString()); err != nil {
+		log.Fatalf("Could not parse gravatarbaseurl: %s", err)
+	}
+
+	AvatarGravatarBaseURL.Set(strings.TrimRight(AvatarGravatarBaseURL.GetString(), "/"))
 
 	if RateLimitStore.GetString() == "keyvalue" {
 		RateLimitStore.Set(KeyvalueType.GetString())

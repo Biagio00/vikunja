@@ -295,6 +295,7 @@ func (p *Project) ReadOne(s *xorm.Session, a web.Auth) (err error) {
 		}
 		p.Title = sf.Title
 		p.Description = sf.Description
+		p.IsFavorite = sf.IsFavorite
 		p.Created = sf.Created
 		p.Updated = sf.Updated
 		p.OwnerID = sf.OwnerID
@@ -334,9 +335,13 @@ func (p *Project) ReadOne(s *xorm.Session, a web.Auth) (err error) {
 		}
 	}
 
-	p.IsFavorite, err = isFavorite(s, p.ID, a, FavoriteKindProject)
-	if err != nil {
-		return
+	// For saved filters, IsFavorite was already set from the SavedFilter struct.
+	// Don't overwrite it with the project favorites lookup.
+	if !isFilter {
+		p.IsFavorite, err = isFavorite(s, p.ID, a, FavoriteKindProject)
+		if err != nil {
+			return
+		}
 	}
 
 	subs, err := GetSubscriptionForUser(s, SubscriptionEntityProject, p.ID, a)
@@ -1186,7 +1191,7 @@ func (p *Project) Delete(s *xorm.Session, a web.Auth) (err error) {
 		return
 	}
 
-	err = fullProject.DeleteBackgroundFileIfExists()
+	err = fullProject.DeleteBackgroundFileIfExists(s)
 	if err != nil {
 		return
 	}
@@ -1273,13 +1278,10 @@ func (p *Project) Delete(s *xorm.Session, a web.Auth) (err error) {
 
 // DeleteBackgroundFileIfExists deletes the list's background file from the db and the filesystem,
 // if one exists
-func (p *Project) DeleteBackgroundFileIfExists() (err error) {
+func (p *Project) DeleteBackgroundFileIfExists(s *xorm.Session) (err error) {
 	if p.BackgroundFileID == 0 {
 		return
 	}
-
-	s := db.NewSession()
-	defer s.Close()
 
 	file := files.File{ID: p.BackgroundFileID}
 	err = file.Delete(s)

@@ -1,6 +1,6 @@
 <template>
 	<Ready>
-		<template v-if="authStore.authUser">
+		<template v-if="showAuthLayout">
 			<AppHeader />
 			<ContentAuth />
 		</template>
@@ -39,7 +39,7 @@ import ContentLinkShare from '@/components/home/ContentLinkShare.vue'
 import NoAuthWrapper from '@/components/misc/NoAuthWrapper.vue'
 import Ready from '@/components/misc/Ready.vue'
 
-import {setLanguage} from '@/i18n'
+import {DEFAULT_LANGUAGE, setLanguage} from '@/i18n'
 
 import {useAuthStore} from '@/stores/auth'
 import {useBaseStore} from '@/stores/base'
@@ -48,6 +48,7 @@ import {useColorScheme} from '@/composables/useColorScheme'
 import {useBodyClass} from '@/composables/useBodyClass'
 import AddToHomeScreen from '@/components/home/AddToHomeScreen.vue'
 import DemoMode from '@/components/home/DemoMode.vue'
+import {AUTH_ROUTE_NAMES} from '@/constants/authRouteNames'
 
 const importAccountDeleteService = () => import('@/services/accountDelete')
 import {success} from '@/message'
@@ -56,6 +57,8 @@ const authStore = useAuthStore()
 const baseStore = useBaseStore()
 
 const route = useRoute()
+
+const showAuthLayout = computed(() => authStore.authUser && typeof route.name === 'string' && !AUTH_ROUTE_NAMES.has(route.name))
 
 useBodyClass('is-touch', isTouchDevice())
 const keyboardShortcutsActive = computed(() => baseStore.keyboardShortcutsActive)
@@ -76,7 +79,7 @@ watch(accountDeletionConfirm, async (accountDeletionConfirm) => {
 	authStore.refreshUserInfo()
 }, { immediate: true })
 
-setLanguage(authStore.settings.language)
+setLanguage(authStore.settings.language ?? DEFAULT_LANGUAGE)
 useColorScheme()
 </script>
 
