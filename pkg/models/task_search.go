@@ -17,18 +17,12 @@
 package models
 
 import (
-	"context"
 	"fmt"
-	"strconv"
 	"strings"
-	"time"
 
 	"code.vikunja.io/api/pkg/db"
-	"code.vikunja.io/api/pkg/log"
 	"code.vikunja.io/api/pkg/web"
 
-	"github.com/typesense/typesense-go/v2/typesense/api"
-	"github.com/typesense/typesense-go/v2/typesense/api/pointer"
 	"xorm.io/builder"
 	"xorm.io/xorm"
 	"xorm.io/xorm/schemas"
@@ -87,6 +81,16 @@ var strictComparators = map[taskFilterComparator]bool{
 	taskFilterComparatorNotIn:     true,
 	taskFilterComparatorEquals:    true,
 	taskFilterComparatorNotEquals: true,
+}
+
+// isRangeComparator returns true for comparators where combining multiple
+// conditions into a single EXISTS subquery is semantically correct (i.e. a
+// single row can satisfy both conditions simultaneously).
+func isRangeComparator(c taskFilterComparator) bool {
+	return c == taskFilterComparatorGreater ||
+		c == taskFilterComparatorGreateEquals ||
+		c == taskFilterComparatorLess ||
+		c == taskFilterComparatorLessEquals
 }
 
 type taskSearcher interface {
@@ -159,8 +163,12 @@ func getOrderByDBStatement(opts *taskSearchOptions) (orderby string, err error) 
 func convertFiltersToDBFilterCond(rawFilters []*taskFilter, includeNulls bool) (filterCond builder.Cond, err error) {
 
 	var dbFilters = make([]builder.Cond, 0, len(rawFilters))
-	// To still find tasks with nil values, we exclude 0s when comparing with >/< values.
-	for _, f := range rawFilters {
+	// Track join types separately because after merging consecutive sub-table
+	// filters, the indexes of dbFilters no longer correspond 1:1 with rawFilters.
+	var dbFilterJoins = make([]taskFilterConcatinator, 0, len(rawFilters))
+
+	for i := 0; i < len(rawFilters); i++ {
+		f := rawFilters[i]
 
 		if nested, is := f.value.([]*taskFilter); is {
 			nestedDBFilters, err := convertFiltersToDBFilterCond(nested, includeNulls)
@@ -168,6 +176,7 @@ func convertFiltersToDBFilterCond(rawFilters []*taskFilter, includeNulls bool) (
 				return nil, err
 			}
 			dbFilters = append(dbFilters, nestedDBFilters)
+			dbFilterJoins = append(dbFilterJoins, f.join)
 			continue
 		}
 
@@ -177,27 +186,57 @@ func convertFiltersToDBFilterCond(rawFilters []*taskFilter, includeNulls bool) (
 				continue
 			}
 
-			comparator := f.comparator
-			_, ok = strictComparators[f.comparator]
-			// we will select all specified values in both cases, negative and positive filtering.
-			// but later we will eather check their existence or absence of them.
-			if ok {
-				comparator = taskFilterComparatorIn
+			// Collect all consecutive AND-joined range filters targeting the same sub-table.
+			// Only range comparators (>, >=, <, <=) are merged because they express
+			// conditions a single row can satisfy simultaneously (e.g. reminder > X AND
+			// reminder < Y). Equality/IN/NOT comparators must remain as separate EXISTS
+			// subqueries because each matching value lives in its own row (e.g.
+			// labels = 4 && labels = 5 means two different rows must each exist).
+			group := []*taskFilter{f}
+			if isRangeComparator(f.comparator) {
+				for i+1 < len(rawFilters) {
+					next := rawFilters[i+1]
+					nextSubTable, nextOk := subTableFilters[next.field]
+					if !nextOk || nextSubTable.Table != subTableFilterParams.Table || next.join != filterConcatAnd {
+						break
+					}
+					if !isRangeComparator(next.comparator) {
+						break
+					}
+					group = append(group, next)
+					i++
+				}
 			}
 
-			filter, err := getFilterCond(&taskFilter{
-				// recreating the struct here to avoid modifying it when reusing the opts struct
-				field:      subTableFilterParams.FilterableField,
-				value:      f.value,
-				comparator: comparator,
-				isNumeric:  f.isNumeric,
-			}, false)
-			if err != nil {
-				return nil, err
+			// Build the combined condition for all filters in the group
+			var combinedInnerCond builder.Cond
+			for _, gf := range group {
+				comparator := gf.comparator
+				_, isStrict := strictComparators[gf.comparator]
+				if isStrict {
+					comparator = taskFilterComparatorIn
+				}
+
+				innerFilter, err := getFilterCond(&taskFilter{
+					field:      subTableFilterParams.FilterableField,
+					value:      gf.value,
+					comparator: comparator,
+					isNumeric:  gf.isNumeric,
+				}, false)
+				if err != nil {
+					return nil, err
+				}
+
+				if combinedInnerCond == nil {
+					combinedInnerCond = innerFilter
+				} else {
+					combinedInnerCond = builder.And(combinedInnerCond, innerFilter)
+				}
 			}
 
-			filterSubQuery := subTableFilterParams.ToBaseSubQuery().And(filter)
+			filterSubQuery := subTableFilterParams.ToBaseSubQuery().And(combinedInnerCond)
 
+			var filter builder.Cond
 			if f.comparator == taskFilterComparatorNotEquals || f.comparator == taskFilterComparatorNotIn {
 				filter = builder.NotExists(filterSubQuery)
 			} else {
@@ -205,11 +244,14 @@ func convertFiltersToDBFilterCond(rawFilters []*taskFilter, includeNulls bool) (
 			}
 
 			if includeNulls && subTableFilterParams.AllowNullCheck {
-				// check that we have no any connected values for this field
 				filter = builder.Or(filter, builder.NotExists(subTableFilterParams.ToBaseSubQuery()))
 			}
 
 			dbFilters = append(dbFilters, filter)
+			// Use the join from the first filter in the group: f.join describes how
+			// this group connects to the previous element (matches the convention
+			// where dbFilterJoins[i+1] combines dbFilters[i] with dbFilters[i+1]).
+			dbFilterJoins = append(dbFilterJoins, f.join)
 			continue
 		}
 
@@ -223,19 +265,19 @@ func convertFiltersToDBFilterCond(rawFilters []*taskFilter, includeNulls bool) (
 			return nil, err
 		}
 		dbFilters = append(dbFilters, filter)
+		dbFilterJoins = append(dbFilterJoins, f.join)
 	}
 
 	if len(dbFilters) > 0 {
-		if len(dbFilters) == 1 {
-			filterCond = dbFilters[0]
-		} else {
-			for i, f := range dbFilters {
+		filterCond = dbFilters[0]
+		if len(dbFilters) >= 1 {
+			for i := range dbFilters {
 				if len(dbFilters) > i+1 {
-					switch rawFilters[i+1].join {
+					switch dbFilterJoins[i+1] {
 					case filterConcatOr:
-						filterCond = builder.Or(filterCond, f, dbFilters[i+1])
+						filterCond = builder.Or(filterCond, dbFilters[i+1])
 					case filterConcatAnd:
-						filterCond = builder.And(filterCond, f, dbFilters[i+1])
+						filterCond = builder.And(filterCond, dbFilters[i+1])
 					}
 				}
 			}
@@ -441,269 +483,4 @@ func (d *dbTaskSearcher) Search(opts *taskSearchOptions) (tasks []*Task, totalCo
 		return nil, 0, fmt.Errorf("could not fetch task count, error was '%w', sql: '%v', values: %v", err, sql, vals)
 	}
 	return
-}
-
-type typesenseTaskSearcher struct {
-	s *xorm.Session
-}
-
-func convertFilterValues(value interface{}) string {
-	if _, is := value.([]interface{}); is {
-		filter := []string{}
-		for _, v := range value.([]interface{}) {
-			filter = append(filter, convertFilterValues(v))
-		}
-
-		return strings.Join(filter, ",")
-	}
-
-	if stringSlice, is := value.([]string); is {
-		filter := []string{}
-		for _, v := range stringSlice {
-			filter = append(filter, convertFilterValues(v))
-		}
-
-		return strings.Join(filter, ",")
-	}
-
-	switch v := value.(type) {
-	case string:
-		return v
-	case int:
-		return strconv.Itoa(v)
-	case int64:
-		return strconv.FormatInt(v, 10)
-	case bool:
-		if v {
-			return "true"
-		}
-
-		return "false"
-	case time.Time:
-		return strconv.FormatInt(v.Unix(), 10)
-	default:
-		log.Errorf("Unknown search type for value %v of type %T", value, value)
-	}
-
-	return ""
-}
-
-// Parsing and rebuilding the filter for Typesense has the advantage that we have more control over
-// what Typesense finally gets to see.
-func convertParsedFilterToTypesense(rawFilters []*taskFilter) (filterBy string, err error) {
-
-	filters := []string{}
-
-	for _, f := range rawFilters {
-
-		if nested, is := f.value.([]*taskFilter); is {
-			nestedDBFilters, err := convertParsedFilterToTypesense(nested)
-			if err != nil {
-				return "", err
-			}
-			filters = append(filters, "("+nestedDBFilters+")")
-			continue
-		}
-
-		if f.field == "reminders" {
-			f.field = "reminders.reminder"
-		}
-
-		if f.field == "assignees" {
-			f.field = "assignees.username"
-		}
-
-		if f.field == "labels" || f.field == "label_id" {
-			f.field = "labels.id"
-		}
-
-		if f.field == "project" {
-			f.field = "project_id"
-		}
-
-		if f.field == taskPropertyBucketID {
-			f.field = "buckets"
-		}
-
-		filter := f.field
-
-		switch f.comparator {
-		case taskFilterComparatorEquals:
-			filter += ":="
-		case taskFilterComparatorNotEquals:
-			filter += ":!="
-		case taskFilterComparatorGreater:
-			filter += ":>"
-		case taskFilterComparatorGreateEquals:
-			filter += ":>="
-		case taskFilterComparatorLess:
-			filter += ":<"
-		case taskFilterComparatorLessEquals:
-			filter += ":<="
-		case taskFilterComparatorLike:
-			filter += ":"
-		case taskFilterComparatorIn:
-			filter += ":["
-		case taskFilterComparatorNotIn:
-			filter += ":!=["
-		case taskFilterComparatorInvalid:
-		// Nothing to do
-		default:
-			filter += ":="
-		}
-
-		filter += convertFilterValues(f.value)
-
-		if f.comparator == taskFilterComparatorIn || f.comparator == taskFilterComparatorNotIn {
-			filter += "]"
-		}
-
-		filters = append(filters, filter)
-	}
-
-	if len(filters) > 0 {
-		if len(filters) == 1 {
-			filterBy = filters[0]
-		} else {
-			for i, f := range filters {
-				if len(filters) > i+1 {
-					switch rawFilters[i+1].join {
-					case filterConcatOr:
-						filterBy = f + " || " + filters[i+1]
-					case filterConcatAnd:
-						filterBy = f + " && " + filters[i+1]
-					}
-				}
-			}
-		}
-	}
-
-	return
-}
-
-func (t *typesenseTaskSearcher) Search(opts *taskSearchOptions) (tasks []*Task, totalCount int64, err error) {
-
-	projectIDStrings := []string{}
-	for _, id := range opts.projectIDs {
-		projectIDStrings = append(projectIDStrings, strconv.FormatInt(id, 10))
-	}
-
-	filter, err := convertParsedFilterToTypesense(opts.parsedFilters)
-	if err != nil {
-		return nil, 0, err
-	}
-
-	filterBy := []string{"project_id: [" + strings.Join(projectIDStrings, ", ") + "]"}
-
-	if filter != "" {
-		filterBy = append(filterBy, "("+filter+")")
-	}
-
-	var sortbyFields []string
-	var usedParams int
-	for _, param := range opts.sortby {
-
-		if opts.isSavedFilter && param.sortBy == taskPropertyPosition {
-			continue
-		}
-
-		// Validate the params
-		if err := param.validate(); err != nil {
-			return nil, totalCount, err
-		}
-
-		sortBy := param.sortBy
-
-		// Typesense does not allow sorting by ID, so we sort by created timestamp instead
-		if param.sortBy == taskPropertyID {
-			sortBy = taskPropertyCreated
-		}
-
-		if param.sortBy == taskPropertyPosition {
-			sortBy = "positions.view_" + strconv.FormatInt(param.projectViewID, 10)
-		}
-
-		sortbyFields = append(sortbyFields, sortBy+"(missing_values:last):"+param.orderBy.String())
-
-		if usedParams == 2 {
-			// Typesense supports up to 3 sorting parameters
-			// https://typesense.org/docs/0.25.0/api/search.html#ranking-and-sorting-parameters
-			break
-		}
-
-		usedParams++
-	}
-
-	sortby := strings.Join(sortbyFields, ",")
-
-	////////////////
-	// Actual search
-
-	if opts.search == "" {
-		opts.search = "*"
-	}
-
-	params := &api.SearchCollectionParams{
-		Q:                pointer.String(opts.search),
-		QueryBy:          pointer.String("title, identifier, description, comments.comment"),
-		Page:             pointer.Int(opts.page),
-		ExhaustiveSearch: pointer.True(),
-		FilterBy:         pointer.String(strings.Join(filterBy, " && ")),
-	}
-
-	if opts.perPage > 0 {
-		if opts.perPage > 250 {
-			log.Warningf("Typesense only supports up to 250 results per page, requested %d.", opts.perPage)
-			opts.perPage = 250
-		}
-		params.PerPage = pointer.Int(opts.perPage)
-	}
-
-	if sortby != "" {
-		params.SortBy = pointer.String(sortby)
-	}
-
-	result, err := typesenseClient.Collection("tasks").
-		Documents().
-		Search(context.Background(), params)
-	if err != nil {
-		return
-	}
-
-	taskIDs := []int64{}
-	for _, h := range *result.Hits {
-		hit := *h.Document
-		taskID, err := strconv.ParseInt(hit["id"].(string), 10, 64)
-		if err != nil {
-			return nil, 0, err
-		}
-		taskIDs = append(taskIDs, taskID)
-	}
-
-	tasks = []*Task{}
-
-	orderby, err := getOrderByDBStatement(opts)
-	if err != nil {
-		return nil, 0, err
-	}
-
-	var distinct = "tasks.*"
-	if strings.Contains(orderby, "task_positions.") {
-		distinct += ", task_positions.position"
-	}
-
-	query := t.s.
-		Distinct(distinct).
-		In("id", taskIDs).
-		OrderBy(orderby)
-
-	for _, param := range opts.sortby {
-		if param.sortBy == taskPropertyPosition {
-			query = query.Join("LEFT", "task_positions", "task_positions.task_id = tasks.id AND task_positions.project_view_id = ?", param.projectViewID)
-			break
-		}
-	}
-
-	err = query.Find(&tasks)
-	return tasks, int64(*result.Found), err
 }

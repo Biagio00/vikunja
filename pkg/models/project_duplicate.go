@@ -301,7 +301,7 @@ func duplicateProjectBackground(s *xorm.Session, pd *ProjectDuplicate, doer web.
 	}
 	defer f.File.Close()
 
-	file, err := files.Create(f.File, f.Name, f.Size, doer)
+	file, err := files.CreateWithSession(s, f.File, f.Name, f.Size, doer)
 	if err != nil {
 		return err
 	}
@@ -325,7 +325,7 @@ func duplicateProjectBackground(s *xorm.Session, pd *ProjectDuplicate, doer web.
 
 	log.Debugf("Duplicated project background from project %d into %d", pd.ProjectID, pd.Project.ID)
 
-	return
+	return nil
 }
 
 func duplicateTasks(s *xorm.Session, doer web.Auth, ld *ProjectDuplicate) (newTaskIDs map[int64]int64, err error) {

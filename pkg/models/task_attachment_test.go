@@ -17,7 +17,7 @@
 package models
 
 import (
-	"io"
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
@@ -86,24 +86,6 @@ func TestTaskAttachment_ReadOne(t *testing.T) {
 	})
 }
 
-type testfile struct {
-	content []byte
-	done    bool
-}
-
-func (t *testfile) Read(p []byte) (n int, err error) {
-	if t.done {
-		return 0, io.EOF
-	}
-	copy(p, t.content)
-	t.done = true
-	return len(p), nil
-}
-
-func (t *testfile) Close() error {
-	return nil
-}
-
 func TestTaskAttachment_NewAttachment(t *testing.T) {
 	db.LoadAndAssertFixtures(t)
 	s := db.NewSession()
@@ -114,18 +96,19 @@ func TestTaskAttachment_NewAttachment(t *testing.T) {
 	ta := TaskAttachment{
 		TaskID: 1,
 	}
-	tf := &testfile{
-		content: []byte("testingstuff"),
-	}
 	testuser := &user.User{ID: 1}
 
-	err := ta.NewAttachment(s, tf, "testfile", 100, testuser)
+	err := ta.NewAttachment(s, bytes.NewReader([]byte("testingstuff")), "testfile", 100, testuser)
 	require.NoError(t, err)
 	assert.NotEqual(t, 0, ta.FileID)
 	_, err = files.FileStat(ta.File)
 	require.NoError(t, err)
 	assert.False(t, os.IsNotExist(err))
 	assert.Equal(t, testuser.ID, ta.CreatedByID)
+
+	// Commit so that LoadFileMetaByID (which reads via the global engine) can see the data
+	err = s.Commit()
+	require.NoError(t, err)
 
 	// Check the file was inserted correctly
 	ta.File = &files.File{ID: ta.FileID}
@@ -134,6 +117,7 @@ func TestTaskAttachment_NewAttachment(t *testing.T) {
 	assert.Equal(t, testuser.ID, ta.File.CreatedByID)
 	assert.Equal(t, "testfile", ta.File.Name)
 	assert.Equal(t, uint64(100), ta.File.Size)
+	assert.NotEmpty(t, ta.File.Mime, "mime type should be detected and stored")
 
 	// Extra test for max size test
 }

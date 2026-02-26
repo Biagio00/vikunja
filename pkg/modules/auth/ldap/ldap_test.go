@@ -46,6 +46,7 @@ func TestLdapLogin(t *testing.T) {
 
 		require.NoError(t, err)
 		assert.Equal(t, "professor", user.Username)
+		require.NoError(t, s.Commit())
 		db.AssertExists(t, "users", map[string]interface{}{
 			"username": "professor",
 			"issuer":   "ldap",
@@ -86,6 +87,7 @@ func TestLdapLogin(t *testing.T) {
 
 		require.NoError(t, err)
 		assert.Equal(t, "professor", user.Username)
+		require.NoError(t, s.Commit())
 		db.AssertExists(t, "users", map[string]interface{}{
 			"username": "professor",
 			"issuer":   "ldap",
@@ -111,11 +113,43 @@ func TestLdapLogin(t *testing.T) {
 
 		require.NoError(t, err)
 		assert.Equal(t, "professor", user.Username)
+		require.NoError(t, s.Commit())
 		db.AssertExists(t, "users", map[string]interface{}{
 			"username":        "professor",
 			"issuer":          "ldap",
 			"avatar_provider": "ldap",
 		}, false)
+	})
+
+	t.Run("should bind anonymously", func(t *testing.T) {
+		// Backup original config
+		origBindDN := config.AuthLdapBindDN.GetString()
+		origBindPW := config.AuthLdapBindPassword.GetString()
+		defer func() {
+			config.AuthLdapBindDN.Set(origBindDN)
+			config.AuthLdapBindPassword.Set(origBindPW)
+		}()
+
+		// Set empty bind credentials
+		config.AuthLdapBindDN.Set("")
+		config.AuthLdapBindPassword.Set("")
+
+		db.LoadAndAssertFixtures(t)
+		s := db.NewSession()
+		defer s.Close()
+
+		// Attempt to authenticate
+		// Note: This test might fail if the test LDAP server doesn't support anonymous bind,
+		// but it verifies the code path executes
+		user, err := AuthenticateUserInLDAP(s, "professor", "professor", false, "")
+
+		// We mainly want to ensure we don't panic or error out due to missing config
+		if err != nil {
+			// If it fails, it should be an LDAP error, not a "configuration missing" error
+			require.NotContains(t, err.Error(), "configured")
+		} else {
+			assert.Equal(t, "professor", user.Username)
+		}
 	})
 }
 

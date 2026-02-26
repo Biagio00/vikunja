@@ -64,11 +64,11 @@
 										{{ bucket.title }}
 									</h2>
 									<span
-										v-if="bucket.limit > 0"
-										:class="{'is-max': bucket.count >= bucket.limit}"
+										v-if="bucket.limit > 0 || alwaysShowBucketTaskCount"
+										:class="{'is-max': bucket.limit > 0 && bucket.count >= bucket.limit}"
 										class="limit"
 									>
-										{{ bucket.count }}/{{ bucket.limit }}
+										{{ bucket.limit > 0 ? `${bucket.count}/${bucket.limit}` : bucket.count }}
 									</span>
 									<Dropdown
 										v-if="canWrite && !collapsedBuckets[bucket.id]"
@@ -148,6 +148,8 @@
 
 								<draggable
 									v-bind="DRAG_OPTIONS"
+									:handle="taskDragHandle"
+									:delay="isTouchDevice ? 300 : 1000"
 									:model-value="bucket.tasks"
 									:group="{name: 'tasks', put: shouldAcceptDrop(bucket) && !dragBucket}"
 									:disabled="!canWrite"
@@ -156,7 +158,7 @@
 									:item-key="(task: ITask) => `bucket${bucket.id}-task${task.id}`"
 									:component-data="getTaskDraggableTaskComponentData(bucket)"
 									@update:modelValue="(tasks) => updateTasks(bucket.id, tasks)"
-									@start="() => dragstart(bucket)"
+									@start="handleTaskDragStart"
 									@end="updateTaskPosition"
 								>
 									<template #footer>
@@ -165,7 +167,7 @@
 											class="bucket-footer"
 										>
 											<div
-												v-if="showNewTaskInput[bucket.id]"
+												v-if="showNewTaskInput === bucket.id"
 												class="field"
 											>
 												<div
@@ -210,7 +212,17 @@
 									</template>
 
 									<template #item="{element: task}">
-										<div class="task-item">
+										<div
+											class="task-item"
+											:data-task-id="task.id"
+										>
+											<span
+												v-if="canWrite && isTouchDevice"
+												class="handle"
+												@click="openTask(task)"
+												@touchstart.passive="onHandleTouchStart"
+												@touchmove.passive="onHandleTouchMove"
+											/>
 											<KanbanCard
 												class="kanban-card"
 												:task="task"
@@ -278,6 +290,7 @@
 
 <script setup lang="ts">
 import {computed, nextTick, ref, watch, toRef} from 'vue'
+import {useRouter} from 'vue-router'
 import {useRouteQuery} from '@vueuse/router'
 import {useI18n} from 'vue-i18n'
 import draggable from 'zhyswan-vuedraggable'
@@ -292,6 +305,7 @@ import type {ITask} from '@/modelTypes/ITask'
 import {useBaseStore} from '@/stores/base'
 import {useTaskStore} from '@/stores/tasks'
 import {useKanbanStore} from '@/stores/kanban'
+import {useAuthStore} from '@/stores/auth'
 
 import ProjectWrapper from '@/components/project/ProjectWrapper.vue'
 import FilterPopup from '@/components/project/partials/FilterPopup.vue'
@@ -307,6 +321,7 @@ import {
 import {calculateItemPosition} from '@/helpers/calculateItemPosition'
 
 import {isSavedFilter, useSavedFilter} from '@/services/savedFilter'
+import {useTaskDragToProject} from '@/composables/useTaskDragToProject'
 import {success} from '@/message'
 import {useProjectStore} from '@/stores/projects'
 import type {TaskFilterParams} from '@/services/taskCollection'
@@ -333,7 +348,7 @@ const DRAG_OPTIONS = {
 	ghostClass: 'ghost',
 	dragClass: 'task-dragging',
 	delayOnTouchOnly: true,
-	delay: 150,
+	delay: 1000,
 } as const
 
 const MIN_SCROLL_HEIGHT_PERCENT = 0.25
@@ -344,11 +359,15 @@ const baseStore = useBaseStore()
 const kanbanStore = useKanbanStore()
 const taskStore = useTaskStore()
 const projectStore = useProjectStore()
+const authStore = useAuthStore()
+
+const alwaysShowBucketTaskCount = computed(() => authStore.settings.frontendSettings.alwaysShowBucketTaskCount)
+const {handleTaskDropToProject} = useTaskDragToProject()
 const taskPositionService = ref(new TaskPositionService())
 const taskBucketService = ref(new TaskBucketService())
 
 // Saved filter composable for accessing filter data
-const savedFilter = useSavedFilter(() => projectId.value < 0 ? projectId.value : undefined).filter
+const savedFilter = useSavedFilter(() => isSavedFilter({id: projectId.value}) ? projectId.value : undefined).filter
 
 const taskContainerRefs = ref<{ [id: IBucket['id']]: HTMLElement }>({})
 const bucketLimitInputRef = ref<HTMLInputElement | null>(null)
@@ -362,7 +381,7 @@ const bucketToDelete = ref(0)
 const bucketTitleEditable = ref(false)
 
 const newTaskText = ref('')
-const showNewTaskInput = ref<{ [id: IBucket['id']]: boolean }>({})
+const showNewTaskInput = ref<IBucket['id'] | null>(null)
 
 const newBucketTitle = ref('')
 const showNewBucketInput = ref(false)
@@ -427,8 +446,43 @@ const project = computed(() => projectId.value ? projectStore.projects[projectId
 const view = computed(() => project.value?.views.find(v => v.id === props.viewId) as IProjectView || null)
 const canWrite = computed(() => baseStore.currentProject?.maxPermission > Permissions.READ && view.value.bucketConfigurationMode === 'manual')
 const canCreateTasks = computed(() => canWrite.value && projectId.value > 0)
+
+const isTouchDevice = ref(false)
+if (typeof window !== 'undefined') {
+	isTouchDevice.value = !window.matchMedia('(hover: hover) and (pointer: fine)').matches
+}
+const taskDragHandle = computed(() => isTouchDevice.value ? '.handle' : undefined)
+
+const router = useRouter()
+const touchStartY = ref(0)
+
+function openTask(task: ITask) {
+	router.push({
+		name: 'task.detail',
+		params: {id: task.id},
+		state: {backdropView: router.currentRoute.value.fullPath},
+	})
+}
+
+function onHandleTouchStart(e: TouchEvent) {
+	touchStartY.value = e.touches[0].clientY
+}
+
+function onHandleTouchMove(e: TouchEvent) {
+	if (drag.value) return
+
+	const currentY = e.touches[0].clientY
+	const deltaY = touchStartY.value - currentY
+	const scrollContainer = (e.target as HTMLElement).closest('.tasks') as HTMLElement | null
+	if (scrollContainer) {
+		scrollContainer.scrollTop += deltaY
+		touchStartY.value = currentY
+	}
+}
+
 const buckets = computed(() => kanbanStore.buckets)
 const loading = computed(() => kanbanStore.isLoading)
+const projectIdWithFallback = computed<number>(() => project.value?.id || projectId.value)
 
 const taskLoading = computed(() => taskStore.isLoading || taskPositionService.value.loading)
 
@@ -490,6 +544,20 @@ function updateTasks(bucketId: IBucket['id'], tasks: IBucket['tasks']) {
 async function updateTaskPosition(e) {
 	drag.value = false
 
+	// Check if dropped on a sidebar project
+	const {moved} = await handleTaskDropToProject(e, (task) => {
+		kanbanStore.removeTaskInBucket(task)
+	})
+
+	if (moved) {
+		return
+	}
+
+	// If dropped outside kanban
+	if (!e.to.dataset.bucketIndex) {
+		return
+	}
+
 	// While we could just pass the bucket index in through the function call, this would not give us the
 	// new bucket id when a task has been moved between buckets, only the new bucket. Using the data-bucket-id
 	// of the drop target works all the time.
@@ -511,7 +579,7 @@ async function updateTaskPosition(e) {
 		: e.newIndex
 
 	const task = newBucket.tasks[newTaskIndex]
-	const oldBucket = buckets.value.find(b => b.id === task.bucketId)
+	const oldBucket = buckets.value.find(b => b.id === sourceBucket.value)
 	const taskBefore = newBucket.tasks[newTaskIndex - 1] ?? null
 	const taskAfter = newBucket.tasks[newTaskIndex + 1] ?? null
 	taskUpdating.value[task.id] = true
@@ -553,7 +621,7 @@ async function updateTaskPosition(e) {
 				taskId: newTask.id,
 				bucketId: newTask.bucketId,
 				projectViewId: props.viewId,
-				projectId: project.value.id,
+				projectId: projectIdWithFallback.value,
 			}))
 			Object.assign(newTask, updatedTaskBucket.task)
 			newTask.bucketId = updatedTaskBucket.bucketId
@@ -588,7 +656,9 @@ function toggleShowNewTaskInput(bucketId: IBucket['id']) {
 	if (loading.value || taskLoading.value) {
 		return
 	}
-	showNewTaskInput.value[bucketId] = !showNewTaskInput.value[bucketId]
+	showNewTaskInput.value = showNewTaskInput.value === bucketId 
+		? null
+		: bucketId
 	newTaskInputFocused.value = false
 }
 
@@ -602,7 +672,7 @@ async function addTaskToBucket(bucketId: IBucket['id']) {
 	const task = await taskStore.createNewTask({
 		title: newTaskText.value,
 		bucketId,
-		projectId: project.value.id,
+		projectId: projectIdWithFallback.value,
 	})
 	newTaskText.value = ''
 	kanbanStore.addTaskToBucket(task)
@@ -629,7 +699,7 @@ async function createNewBucket() {
 
 	await kanbanStore.createBucket(new BucketModel({
 		title: newBucketTitle.value,
-		projectId: project.value.id,
+		projectId: projectIdWithFallback.value,
 		projectViewId: props.viewId,
 	}))
 	newBucketTitle.value = ''
@@ -649,7 +719,7 @@ async function deleteBucket() {
 		await kanbanStore.deleteBucket({
 			bucket: new BucketModel({
 				id: bucketToDelete.value,
-				projectId: project.value.id,
+				projectId: projectIdWithFallback.value,
 				projectViewId: props.viewId,
 			}),
 			params: params.value,
@@ -770,6 +840,18 @@ function dragstart(bucket: IBucket) {
 	sourceBucket.value = bucket.id
 }
 
+function handleTaskDragStart(e) {
+	const taskId = parseInt(e.item.dataset.taskId, 10)
+	const bucketIndex = parseInt(e.from.dataset.bucketIndex, 10)
+	const bucket = buckets.value[bucketIndex]
+	const task = bucket?.tasks.find(t => t.id === taskId)
+
+	if (task) {
+		taskStore.setDraggedTask(task)
+	}
+	dragstart(bucket)
+}
+
 async function toggleDefaultBucket(bucket: IBucket) {
 	const defaultBucketId = view.value?.defaultBucketId === bucket.id
 		? 0
@@ -802,7 +884,7 @@ async function toggleDoneBucket(bucket: IBucket) {
 		...view.value,
 		doneBucketId,
 	}))
-	
+
 	const views = project.value.views.map(v => v.id === view.value?.id ? updatedView : v)
 	const updatedProject = {
 		...project.value,
@@ -816,7 +898,7 @@ async function toggleDoneBucket(bucket: IBucket) {
 
 function collapseBucket(bucket: IBucket) {
 	collapsedBuckets.value[bucket.id] = true
-	saveCollapsedBucketState(project.value.id, collapsedBuckets.value)
+	saveCollapsedBucketState(projectIdWithFallback.value, collapsedBuckets.value)
 }
 
 function unCollapseBucket(bucket: IBucket) {
@@ -825,7 +907,7 @@ function unCollapseBucket(bucket: IBucket) {
 	}
 
 	collapsedBuckets.value[bucket.id] = false
-	saveCollapsedBucketState(project.value.id, collapsedBuckets.value)
+	saveCollapsedBucketState(projectIdWithFallback.value, collapsedBuckets.value)
 }
 </script>
 
@@ -916,6 +998,7 @@ $filter-container-height: '1rem - #{$switch-view-height}';
 		.task-item {
 			background-color: var(--grey-100);
 			padding: .25rem .5rem;
+			position: relative;
 
 			&:first-of-type {
 				padding-block-start: .5rem;
@@ -923,6 +1006,16 @@ $filter-container-height: '1rem - #{$switch-view-height}';
 
 			&:last-of-type {
 				padding-block-end: .5rem;
+			}
+
+			.handle {
+				position: absolute;
+				inset: 0;
+				z-index: 1;
+				opacity: 0;
+				touch-action: none;
+				-webkit-touch-callout: none;
+				user-select: none;
 			}
 		}
 

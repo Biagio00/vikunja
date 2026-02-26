@@ -21,6 +21,10 @@ export interface IFrontendSettings {
 	dateDisplay: DateDisplay
 	timeFormat: TimeFormat
 	defaultTaskRelationType: IRelationKind
+	backgroundBrightness: number | null
+	alwaysShowBucketTaskCount: boolean
+	sidebarWidth: number | null
+	commentSortOrder: 'asc' | 'desc'
 }
 
 export interface IExtraSettingsLink {

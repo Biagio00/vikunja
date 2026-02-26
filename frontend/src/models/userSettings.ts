@@ -30,6 +30,9 @@ export default class UserSettingsModel extends AbstractModel<IUserSettings> impl
 		dateDisplay: DATE_DISPLAY.RELATIVE,
 		timeFormat: TIME_FORMAT.HOURS_24,
 		defaultTaskRelationType: RELATION_KIND.RELATED,
+		alwaysShowBucketTaskCount: false,
+		sidebarWidth: null,
+		commentSortOrder: 'asc',
 	}
 	extraSettingsLinks = {}
 

@@ -10,7 +10,7 @@ jobs:
     steps:
       - name: Generate GitHub App token
         id: generate-token
-        uses: actions/create-github-app-token@67018539274d69449ef7c02e8e71183d1719ab42 # v2
+        uses: actions/create-github-app-token@29824e69f54612133e76f7eaac726eef6c875baf # v2
         with:
           app-id: ${{ secrets.BOT_APP_ID }}
           private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
@@ -39,6 +39,7 @@ jobs:
               .filter(event => event.event === 'referenced')
               .pop(); // Get the last (most recent) referenced event
 
+            console.log({closedEvent, referencedEvent});
             if (closedEvent && (closedEvent.commit_id || referencedEvent)) {
               const commitId = closedEvent.commit_id ?? referencedEvent.commit_id
               console.log(`✅ Issue #${issueNumber} was closed by commit: ${commitId}`);
@@ -52,7 +53,9 @@ jobs:
               
               core.setOutput('closed_by_commit', 'true');
               core.setOutput('commit_sha', commitId);
-              core.setOutput('commit_message', commit.message);
+              // Escape backslashes, backticks and ${ to prevent breaking JS template strings
+              const escapedMessage = commit.message.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$\{/g, '\\${');
+              core.setOutput('commit_message', escapedMessage);
               core.setOutput('commit_url', closedEvent.commit_url);
             } else {
               console.log(`ℹ️  Issue #${issueNumber} was closed manually (not by commit)`);

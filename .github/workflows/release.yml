@@ -5,7 +5,7 @@ on:
 
 jobs:
   docker:
-    runs-on: blacksmith-4vcpu-ubuntu-2204
+    runs-on: namespace-profile-default
     steps:
       - name: Git describe
         id: ghd
@@ -21,16 +21,10 @@ jobs:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3
-        with:
-          version: latest
       - name: Docker meta version
         if: ${{ github.ref_type == 'tag' }}
         id: meta
-        uses: docker/metadata-action@318604b99e75e41977312d83839a89be02ca4893 # v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
           images: |
             vikunja/vikunja
@@ -49,8 +43,6 @@ jobs:
           tags: |
             vikunja/vikunja:unstable
             ghcr.io/go-vikunja/vikunja:unstable
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
           build-args: |
             RELEASE_VERSION=${{ steps.ghd.outputs.describe }}
       - name: Build and push version
@@ -61,15 +53,13 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
           build-args: |
             RELEASE_VERSION=${{ steps.ghd.outputs.describe }}
 
   binaries:
     runs-on: blacksmith-8vcpu-ubuntu-2204
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
       - name: Git describe
         id: ghd
         uses: proudust/gh-describe@v2
@@ -77,11 +67,11 @@ jobs:
         with:
           go-version: stable
       - name: Download Mage Binary
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: mage_bin
       - name: get frontend
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: frontend_dist
           path: frontend/dist
@@ -93,11 +83,6 @@ jobs:
           sha256sum -c upx-5.0.0-amd64_linux.tar.xz.sha256
           tar xf upx-5.0.0-amd64_linux.tar.xz
           mv upx-5.0.0-amd64_linux/upx /usr/local/bin
-      - name: GPG setup
-        uses: kolaente/action-gpg@main
-        with:
-          gpg-passphrase: "${{ secrets.RELEASE_GPG_PASSPHRASE }}"
-          gpg-sign-key: "${{ secrets.RELEASE_GPG_SIGN_KEY }}"
       - name: setup xgo cache
         uses: useblacksmith/cache@71c7c918062ba3861252d84b07fe5ab2a6b467a6 # v5
         with:
@@ -112,8 +97,23 @@ jobs:
         run: |
           export PATH=$PATH:$GOPATH/bin
           ./mage-static release
+      - name: GPG setup
+        uses: kolaente/action-gpg@main
+        with:
+          gpg-passphrase: "${{ secrets.RELEASE_GPG_PASSPHRASE }}"
+          gpg-sign-key: "${{ secrets.RELEASE_GPG_SIGN_KEY }}"
       - name: sign
         run: |
+          echo "=== GPG agent status ==="
+          gpg-connect-agent 'keyinfo --list' /bye || true
+          echo "=== GPG secret keys ==="
+          gpg -K --with-keygrip
+          echo "=== GPG public keys ==="
+          gpg --list-keys
+          echo "=== GNUPG directory contents ==="
+          ls -la ~/.gnupg/
+          ls -la ~/.gnupg/private-keys-v1.d/ || true
+          echo "=== Signing files ==="
           ls -hal dist/zip/*
           for file in dist/zip/*; do
             gpg -v --default-key 7D061A4AA61436B40713D42EFF054DACD908493A -b --batch --yes --passphrase "${{ secrets.RELEASE_GPG_PASSPHRASE }}" --pinentry-mode loopback --sign "$file"
@@ -130,12 +130,12 @@ jobs:
           files: "dist/zip/*"
           strip-path-prefix: dist/zip/
       - name: Store Binaries
-        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: vikunja_bins
           path: ./dist/binaries/*
       - name: Store Binary Packages
-        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         if: ${{ github.ref_type == 'tag' }}
         with:
           name: vikunja_bin_packages
@@ -154,9 +154,9 @@ jobs:
           - archlinux
 
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
       - name: Download Vikunja Binary
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: vikunja_bins
           pattern: vikunja-*-linux-amd64
@@ -164,7 +164,7 @@ jobs:
         id: ghd
         uses: proudust/gh-describe@v2
       - name: Download Mage Binary
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: mage_bin
       - name: Prepare
@@ -195,7 +195,7 @@ jobs:
           files: "dist/os-packages/*"
           strip-path-prefix: dist/os-packages/
       - name: Store OS Packages
-        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         if: ${{ github.ref_type == 'tag' }}
         with:
           name: vikunja_os_package_${{ matrix.package }}
@@ -204,12 +204,12 @@ jobs:
   config-yaml:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
       - name: Git describe
         id: ghd
         uses: proudust/gh-describe@v2
       - name: Download Mage Binary
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: mage_bin
       - name: generate
@@ -237,7 +237,7 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
       - name: Git describe
         id: ghd
         uses: proudust/gh-describe@v2
@@ -246,7 +246,7 @@ jobs:
         with:
           package_json_file: desktop/package.json
       - name: Setup Node
-        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6
+        uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6
         with:
           node-version-file: frontend/.nvmrc
           cache: pnpm
@@ -257,7 +257,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y libopenjp2-tools rpm libarchive-tools
       - name: get frontend
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: frontend_dist
           path: frontend/dist
@@ -279,7 +279,7 @@ jobs:
           strip-path-prefix: desktop/dist/
           exclude: "desktop/dist/*.blockmap"
       - name: Store Desktop Package
-        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         if: ${{ github.ref_type == 'tag' }}
         with:
           name: vikunja_desktop_packages_${{ matrix.os }}
@@ -293,16 +293,16 @@ jobs:
       contents: write
     steps:
       - name: Checkout
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
         with:
           ssh-key: ${{ secrets.SSH_PRIVATE_KEY }}
           persist-credentials: true
       - name: Download Mage Binary
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: mage_bin
       - name: Set up Go
-        uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6
+        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6
         with:
           go-version: stable
       - name: generate
@@ -343,47 +343,47 @@ jobs:
       contents: write
     steps:
       - name: Download Binaries
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: vikunja_bin_packages
 
       - name: Download OS Package rpm
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: vikunja_os_package_rpm
 
       - name: Download OS Package deb
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: vikunja_os_package_deb
 
       - name: Download OS Package apk
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: vikunja_os_package_apk
 
       - name: Download OS Package archlinux
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: vikunja_os_package_archlinux
 
       - name: Download Desktop Package Linux
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: vikunja_desktop_packages_ubuntu-latest
 
       - name: Download Desktop Package MacOS
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: vikunja_desktop_packages_macos-latest
 
       - name: Download Desktop Package Windows
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: vikunja_desktop_packages_windows-latest
 
       - name: Release
-        uses: softprops/action-gh-release@5be0e66d93ac7ed76da52eca8bb058f665c3a5fe # v2
+        uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2
         if: github.ref_type == 'tag'
         with:
           draft: true

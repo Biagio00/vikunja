@@ -17,8 +17,11 @@
 package files
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -31,7 +34,10 @@ import (
 	"code.vikunja.io/api/pkg/modules/keyvalue"
 
 	"code.vikunja.io/api/pkg/web"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/c2h5oh/datasize"
+	"github.com/gabriel-vasile/mimetype"
 	"github.com/spf13/afero"
 	"xorm.io/xorm"
 )
@@ -80,12 +86,31 @@ func (f *File) LoadFileMetaByID() (err error) {
 }
 
 // Create creates a new file from an FileHeader
-func Create(f io.Reader, realname string, realsize uint64, a web.Auth) (file *File, err error) {
-	return CreateWithMime(f, realname, realsize, a, "")
+func Create(f io.ReadSeeker, realname string, realsize uint64, a web.Auth) (file *File, err error) {
+	mime, err := mimetype.DetectReader(f)
+	if err != nil {
+		return nil, fmt.Errorf("failed to detect mime type: %w", err)
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return nil, fmt.Errorf("failed to seek after mime detection: %w", err)
+	}
+	return CreateWithMime(f, realname, realsize, a, mime.String())
+}
+
+// CreateWithSession creates a new file using an existing session to avoid nested transactions
+func CreateWithSession(s *xorm.Session, f io.ReadSeeker, realname string, realsize uint64, a web.Auth) (file *File, err error) {
+	mime, err := mimetype.DetectReader(f)
+	if err != nil {
+		return nil, fmt.Errorf("failed to detect mime type: %w", err)
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return nil, fmt.Errorf("failed to seek after mime detection: %w", err)
+	}
+	return CreateWithMimeAndSession(s, f, realname, realsize, a, mime.String(), true)
 }
 
 // CreateWithMime creates a new file from an FileHeader and sets its mime type
-func CreateWithMime(f io.Reader, realname string, realsize uint64, a web.Auth, mime string) (file *File, err error) {
+func CreateWithMime(f io.ReadSeeker, realname string, realsize uint64, a web.Auth, mime string) (file *File, err error) {
 	s := db.NewSession()
 	defer s.Close()
 
@@ -94,10 +119,11 @@ func CreateWithMime(f io.Reader, realname string, realsize uint64, a web.Auth, m
 		_ = s.Rollback()
 		return
 	}
-	return
+
+	return file, s.Commit()
 }
 
-func CreateWithMimeAndSession(s *xorm.Session, f io.Reader, realname string, realsize uint64, a web.Auth, mime string, checkFileSizeLimit bool) (file *File, err error) {
+func CreateWithMimeAndSession(s *xorm.Session, f io.ReadSeeker, realname string, realsize uint64, a web.Auth, mime string, checkFileSizeLimit bool) (file *File, err error) {
 	if realsize > config.GetMaxFileSizeInMBytes()*uint64(datasize.MB) && checkFileSizeLimit {
 		return nil, ErrFileIsTooLarge{Size: realsize}
 	}
@@ -120,15 +146,14 @@ func CreateWithMimeAndSession(s *xorm.Session, f io.Reader, realname string, rea
 	return
 }
 
-// Delete removes a file from the DB and the file system
+// Delete removes a file from the DB and the file system.
+// The caller is responsible for committing or rolling back the session.
 func (f *File) Delete(s *xorm.Session) (err error) {
 	deleted, err := s.Where("id = ?", f.ID).Delete(&File{})
 	if err != nil {
-		_ = s.Rollback()
 		return err
 	}
 	if deleted == 0 {
-		_ = s.Rollback()
 		return ErrFileDoesNotExist{FileID: f.ID}
 	}
 
@@ -138,22 +163,64 @@ func (f *File) Delete(s *xorm.Session) (err error) {
 		if errors.As(err, &perr) {
 			// Don't fail when removing the file failed
 			log.Errorf("Error deleting file %d: %s", f.ID, err)
-			return s.Commit()
+			return nil
 		}
 
-		_ = s.Rollback()
 		return err
 	}
 
 	return keyvalue.DecrBy(metrics.FilesCountKey, 1)
 }
 
-// Save saves a file to storage
-func (f *File) Save(fcontent io.Reader) (err error) {
-	err = afs.WriteReader(f.getAbsoluteFilePath(), fcontent)
-	if err != nil {
-		return
+// writeToStorage writes content to the given path, handling both local and S3 backends.
+func writeToStorage(path string, content io.ReadSeeker, size uint64) error {
+	if s3Client == nil {
+		if _, err := content.Seek(0, io.SeekStart); err != nil {
+			return fmt.Errorf("failed to seek to start of content: %w", err)
+		}
+		return afs.WriteReader(path, content)
 	}
 
+	contentLength, err := contentLengthFromReadSeeker(content, size)
+	if err != nil {
+		return fmt.Errorf("failed to determine S3 upload content length: %w", err)
+	}
+
+	if _, err = content.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("failed to seek to start before S3 upload: %w", err)
+	}
+
+	_, err = s3Client.PutObject(context.Background(), &s3.PutObjectInput{
+		Bucket:        aws.String(s3Bucket),
+		Key:           aws.String(path),
+		Body:          content,
+		ContentLength: aws.Int64(contentLength),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to upload file to S3: %w", err)
+	}
+	return nil
+}
+
+// Save saves a file to storage
+func (f *File) Save(fcontent io.ReadSeeker) error {
+	err := writeToStorage(f.getAbsoluteFilePath(), fcontent, f.Size)
+	if err != nil {
+		return fmt.Errorf("failed to save file: %w", err)
+	}
 	return keyvalue.IncrBy(metrics.FilesCountKey, 1)
+}
+
+// contentLengthFromReadSeeker determines the content length by seeking to the end.
+func contentLengthFromReadSeeker(seeker io.ReadSeeker, expectedSize uint64) (int64, error) {
+	endOffset, err := seeker.Seek(0, io.SeekEnd)
+	if err != nil {
+		return 0, err
+	}
+
+	if expectedSize > 0 && expectedSize <= uint64(math.MaxInt64) && endOffset != int64(expectedSize) {
+		log.Warningf("File size mismatch for S3 upload: expected %d bytes but reader reports %d bytes", expectedSize, endOffset)
+	}
+
+	return endOffset, nil
 }
