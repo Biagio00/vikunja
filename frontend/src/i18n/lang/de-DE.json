@@ -68,7 +68,8 @@
 			"alreadyHaveAnAccount": "Hast du bereits einen Account?",
 			"remember": "Angemeldet bleiben",
 			"registrationDisabled": "Registrierung ist deaktiviert.",
-			"passwordResetTokenMissing": "Das Passwort-Reset-Token fehlt."
+			"passwordResetTokenMissing": "Das Passwort-Reset-Token fehlt.",
+			"registrationFailed": "Bei der Registrierung ist ein Fehler aufgetreten. Bitte prüfe deine Eingabe und versuche es erneut."
 		},
 		"settings": {
 			"title": "Einstellungen",
@@ -212,6 +213,20 @@
 					"expiresAt": "Läuft ab am",
 					"permissions": "Berechtigungen"
 				}
+			},
+			"sessions": {
+				"title": "Sitzungen",
+				"description": "Das sind alle Geräte, die gerade in deinem Konto eingeloggt sind. Du kannst jede Sitzung widerrufen, um das jeweilige Gerät abzumelden. Es kann bis zu 10 Minuten dauern, bis der Widerruf vollständig wirksam wird.",
+				"deviceInfo": "Gerät",
+				"ipAddress": "IP Adresse",
+				"lastActive": "Zuletzt aktiv",
+				"current": "Aktuelle Sitzung",
+				"delete": {
+					"header": "Sitzung widerrufen",
+					"text": "Bist du sicher, dass du diese Sitzung widerrufen möchtest? Das Gerät wird abgemeldet. Es kann bis zu 10 Minuten dauern, bis die Sitzung vollständig abläuft."
+				},
+				"deleteSuccess": "Sitzung erfolgreich widerrufen. Es kann bis zu 10 Minuten dauern, bis die Sitzung vollständig abläuft.",
+				"noOtherSessions": "Keine anderen aktiven Sitzungen."
 			}
 		},
 		"deletion": {
@@ -392,7 +407,10 @@
 			"taskAriaLabel": "Aufgabe: {task}",
 			"taskAriaLabelById": "Aufgabe {id}",
 			"partialDatesStart": "Nur Startdatum (offen)",
-			"partialDatesEnd": "Nur Enddatum (offen)"
+			"partialDatesEnd": "Nur Enddatum (offen)",
+			"expandGroup": "Gruppe ausklappen: {task}",
+			"collapseGroup": "Gruppe einklappen: {task}",
+			"toggleRelationArrows": "Relations-Pfeile ein/aus"
 		},
 		"table": {
 			"title": "Tabelle",
@@ -833,6 +851,7 @@
 			"doneAt": "Erledigt {0}",
 			"updateSuccess": "Die Aufgabe wurde erfolgreich gespeichert.",
 			"deleteSuccess": "Die Aufgabe wurde erfolgreich gelöscht.",
+			"duplicateSuccess": "Die Aufgabe wurde erfolgreich dupliziert.",
 			"belongsToProject": "Diese Aufgabe gehört zum Projekt „{project}“",
 			"back": "Zurück zum Projekt",
 			"due": "Fällig {at}",
@@ -859,6 +878,7 @@
 				"attachments": "Anhänge hinzufügen",
 				"relatedTasks": "Beziehung hinzufügen",
 				"moveProject": "Verschieben",
+				"duplicate": "Duplizieren",
 				"color": "Farbe setzen",
 				"delete": "Löschen",
 				"favorite": "Zu Favoriten hinzufügen",

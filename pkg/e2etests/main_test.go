@@ -14,16 +14,19 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-//go:build tools
-
-package tools
-
-// This file is needed for go mod to recognize the tools we use.
+package e2etests
 
 import (
-	_ "github.com/cweill/gotests"
-	_ "github.com/swaggo/swag/cmd/swag"
-	_ "src.techknowlogick.com/xgo"
-
-	_ "github.com/magefile/mage"
+	"flag"
+	"os"
+	"testing"
 )
+
+func TestMain(m *testing.M) {
+	flag.Parse()
+	if testing.Short() {
+		println("-short requested, skipping e2e tests")
+		return
+	}
+	os.Exit(m.Run())
+}
