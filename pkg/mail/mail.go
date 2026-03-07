@@ -35,9 +35,17 @@ func getClient() (*mail.Client, error) {
 	var authType mail.SMTPAuthType
 	switch config.MailerAuthType.GetString() {
 	case "plain":
-		authType = mail.SMTPAuthPlain
+		if (config.MailerPort.GetInt() == 25) {
+			authType = mail.SMTPAuthPlainNoEnc
+		} else {
+			authType = mail.SMTPAuthPlain
+		}
 	case "login":
-		authType = mail.SMTPAuthLogin
+		if (config.MailerPort.GetInt() == 25) {
+			authType = mail.SMTPAuthLoginNoEnc
+		} else {
+			authType = mail.SMTPAuthLogin
+		}
 	case "cram-md5":
 		authType = mail.SMTPAuthCramMD5
 	}
